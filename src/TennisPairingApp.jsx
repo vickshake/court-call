@@ -1270,6 +1270,9 @@ export default function TennisPairingApp() {
                   rows={4}
                   className="tp-focus tp-input w-full px-3 py-2 text-sm"
                 />
+                <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                  This adds people to today's list — it never removes anyone, even if you take a name back out of this box. To remove someone, tap their name in the list below instead.
+                </div>
                 <button
                   type="button"
                   onClick={handleMatchNames}
