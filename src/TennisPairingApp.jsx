@@ -444,6 +444,25 @@ function normalizeName(s) {
   return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+function levenshtein1(a, b) {
+  // Returns true only if a and b differ by exactly one single-character edit
+  // (substitution, insertion, or deletion). Cheap on purpose - this only needs
+  // to catch near-miss spellings like "Marc" vs "Mark", not fuzzy-match everything.
+  if (Math.abs(a.length - b.length) > 1) return false;
+  if (a === b) return false;
+  let i = 0; let j = 0; let edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i += 1; j += 1; continue; }
+    edits += 1;
+    if (edits > 1) return false;
+    if (a.length === b.length) { i += 1; j += 1; }
+    else if (a.length > b.length) { i += 1; }
+    else { j += 1; }
+  }
+  edits += (a.length - i) + (b.length - j);
+  return edits === 1;
+}
+
 function matchNameToDirectory(inputName, directory) {
   const norm = normalizeName(inputName);
   if (!norm) return null;
@@ -456,7 +475,19 @@ function matchNameToDirectory(inputName, directory) {
     // Single word given (typical GroupMe short name) - matching on first name alone is safe,
     // since no surname was supplied that could contradict it.
     const candidates = directory.filter((p) => normalizeName(p.name).split(' ')[0] === inputTokens[0]);
-    if (candidates.length === 1) return { input: inputName, status: 'matched', player: candidates[0] };
+    if (candidates.length === 1) {
+      // Safety net: even with one exact match, check for a differently-spelled but
+      // easily-confused first name (Marc vs Mark) - surface it as a choice rather
+      // than silently picking, since a one-letter difference is an easy typo to make either way.
+      const nearMiss = directory.filter((p) => {
+        const firstName = normalizeName(p.name).split(' ')[0];
+        return p.id !== candidates[0].id && levenshtein1(firstName, inputTokens[0]);
+      });
+      if (nearMiss.length > 0) {
+        return { input: inputName, status: 'ambiguous', candidates: [...candidates, ...nearMiss] };
+      }
+      return { input: inputName, status: 'matched', player: candidates[0] };
+    }
     if (candidates.length > 1) return { input: inputName, status: 'ambiguous', candidates };
     return { input: inputName, status: 'unmatched' };
   }
@@ -529,6 +560,7 @@ export default function TennisPairingApp() {
   const [showInactiveToday, setShowInactiveToday] = useState(false);
   const [groupMeText, setGroupMeText] = useState('');
   const [namesText, setNamesText] = useState('');
+  const [lastBulkMatchedIds, setLastBulkMatchedIds] = useState([]);
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState('');
   const [matchResults, setMatchResults] = useState(null);
@@ -608,9 +640,11 @@ export default function TennisPairingApp() {
     try {
       await window.storage.set(DIRECTORY_KEY, JSON.stringify(next), true);
       setSaveError('');
+      return true;
     } catch (e) {
       console.error('directory save failed', e);
       setSaveError("Your directory change didn't save — check your connection and try that action again.");
+      return false;
     }
   }
 
@@ -712,9 +746,18 @@ export default function TennisPairingApp() {
       return true;
     });
     const matchedIds = results.filter((r) => r && r.status === 'matched').map((r) => r.player.id);
-    if (matchedIds.length) {
-      persistWeekly({ playingIds: Array.from(new Set([...playingIds, ...matchedIds])) });
+
+    // Anyone this exact box marked playing last time, who isn't in this new submission, gets
+    // taken back out - but only people this box itself added. Anyone marked playing some other
+    // way (tapping their row, a different device) is never touched by this.
+    const droppedFromThisBox = lastBulkMatchedIds.filter((id) => !matchedIds.includes(id));
+    const nextPlayingIds = playingIds.filter((id) => !droppedFromThisBox.includes(id));
+    const finalIds = Array.from(new Set([...nextPlayingIds, ...matchedIds]));
+
+    if (matchedIds.length || droppedFromThisBox.length) {
+      persistWeekly({ playingIds: finalIds });
     }
+    setLastBulkMatchedIds(matchedIds);
     setMatchResults(results);
   }
 
@@ -1018,8 +1061,10 @@ export default function TennisPairingApp() {
       const missing = directory.filter((p) => !incomingNames.has(p.name.trim().toLowerCase()));
 
       if (missing.length === 0) {
-        await persistDirectory(merged);
-        setImportStatus(`Imported: ${added} added, ${updated} matched to existing names and updated.`);
+        const ok = await persistDirectory(merged);
+        setImportStatus(ok
+          ? `Imported: ${added} added, ${updated} matched to existing names and updated.`
+          : "That didn't save — check your connection and try importing again.");
       } else {
         setPendingImport({ merged, missing, added, updated });
         setImportStatus('');
@@ -1036,15 +1081,19 @@ export default function TennisPairingApp() {
     if (!pendingImport) return;
     const missingIds = new Set(pendingImport.missing.map((p) => p.id));
     const final = pendingImport.merged.filter((p) => !missingIds.has(p.id));
-    await persistDirectory(final);
-    setImportStatus(`Imported: ${pendingImport.added} added, ${pendingImport.updated} updated, ${pendingImport.missing.length} removed to match the file.`);
+    const ok = await persistDirectory(final);
+    setImportStatus(ok
+      ? `Imported: ${pendingImport.added} added, ${pendingImport.updated} updated, ${pendingImport.missing.length} removed to match the file.`
+      : "That didn't save — check your connection and try again.");
     setPendingImport(null);
   }
 
   async function resolveImportKeep() {
     if (!pendingImport) return;
-    await persistDirectory(pendingImport.merged);
-    setImportStatus(`Imported: ${pendingImport.added} added, ${pendingImport.updated} updated. Kept ${pendingImport.missing.length} not in the file.`);
+    const ok = await persistDirectory(pendingImport.merged);
+    setImportStatus(ok
+      ? `Imported: ${pendingImport.added} added, ${pendingImport.updated} updated. Kept ${pendingImport.missing.length} not in the file.`
+      : "That didn't save — check your connection and try again.");
     setPendingImport(null);
   }
 
@@ -1271,7 +1320,7 @@ export default function TennisPairingApp() {
                   className="tp-focus tp-input w-full px-3 py-2 text-sm"
                 />
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>
-                  This adds people to today's list — it never removes anyone, even if you take a name back out of this box. To remove someone, tap their name in the list below instead.
+                  Resubmitting this box syncs to exactly what's typed — take a name out and press the button again, and they're removed from today too. This only ever affects people this box itself added, never anyone marked playing another way.
                 </div>
                 <button
                   type="button"
