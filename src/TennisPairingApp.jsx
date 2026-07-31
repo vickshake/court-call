@@ -597,6 +597,7 @@ export default function TennisPairingApp() {
     { id: 'c3', format: 'Doubles', courtNumber: 3 },
     { id: 'c4', format: 'Doubles', courtNumber: 4 },
   ]);
+  const [unavailableCourts, setUnavailableCourts] = useState([]);
   const [rounds, setRounds] = useState(3);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
@@ -662,6 +663,7 @@ export default function TennisPairingApp() {
       const w = JSON.parse(weeklyResult.value.value);
       setPlayingIds(w.playingIds || []);
       if (w.courts) setCourts(w.courts);
+      setUnavailableCourts(w.unavailableCourts || []);
       if (w.rounds) setRounds(w.rounds);
       setSchedule(w.schedule || null);
     }
@@ -698,11 +700,13 @@ export default function TennisPairingApp() {
     const next = {
       playingIds: partial.playingIds !== undefined ? partial.playingIds : playingIds,
       courts: partial.courts !== undefined ? partial.courts : courts,
+      unavailableCourts: partial.unavailableCourts !== undefined ? partial.unavailableCourts : unavailableCourts,
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
     };
     if (partial.playingIds !== undefined) setPlayingIds(partial.playingIds);
     if (partial.courts !== undefined) setCourts(partial.courts);
+    if (partial.unavailableCourts !== undefined) setUnavailableCourts(partial.unavailableCourts);
     if (partial.rounds !== undefined) setRounds(partial.rounds);
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
     try {
@@ -925,6 +929,10 @@ export default function TennisPairingApp() {
   }
   function setCourtNumber(id, courtNumber) {
     persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, courtNumber } : c)) });
+  }
+  function toggleCourtUnavailable(n) {
+    const next = unavailableCourts.includes(n) ? unavailableCourts.filter((x) => x !== n) : [...unavailableCourts, n];
+    persistWeekly({ unavailableCourts: next });
   }
   function setRoundsCount(n) {
     persistWeekly({ rounds: Math.max(1, n) });
@@ -1827,6 +1835,33 @@ export default function TennisPairingApp() {
           {tab === 'courts' && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
               <div>
+                <div className="text-sm font-semibold mb-1">Courts unavailable today</div>
+                <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
+                  Tap any that are off-limits today — pro coaching, USTA matches, etc. They'll be grayed out below so you can't pick them by accident.
+                </div>
+                <div className="flex gap-2">
+                  {[1, 2, 3, 4, 5, 6].map((n) => {
+                    const off = unavailableCourts.includes(n);
+                    return (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => toggleCourtUnavailable(n)}
+                        className="tp-focus flex-1 py-2 text-sm font-semibold rounded-lg border"
+                        style={{
+                          borderColor: off ? 'var(--clay)' : 'var(--line)',
+                          background: off ? 'var(--clay-tint)' : '#fff',
+                          color: off ? 'var(--clay)' : 'var(--ink)',
+                          textDecoration: off ? 'line-through' : 'none',
+                        }}
+                      >
+                        {n}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
                   Set the court number here to apply it to every set this week. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
@@ -1834,16 +1869,21 @@ export default function TennisPairingApp() {
                 <div className="space-y-2">
                   {courts.map((c, i) => {
                     const clash = courts.some((other) => other.id !== c.id && other.courtNumber === c.courtNumber);
+                    const nowUnavailable = unavailableCourts.includes(c.courtNumber);
                     return (
                       <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
                         <select
                           value={c.courtNumber || i + 1}
                           onChange={(e) => setCourtNumber(c.id, Number(e.target.value))}
                           className="tp-focus tp-input font-bold text-sm bg-white px-1.5 py-1"
-                          style={{ color: clash ? 'var(--warn)' : 'var(--court)', width: '3.2rem' }}
+                          style={{ color: clash || nowUnavailable ? 'var(--warn)' : 'var(--court)', width: '3.2rem' }}
                           aria-label={`Court number for row ${i + 1}`}
                         >
-                          {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+                          {[1, 2, 3, 4, 5, 6].map((n) => (
+                            <option key={n} value={n} disabled={unavailableCourts.includes(n) && n !== c.courtNumber}>
+                              {n}{unavailableCourts.includes(n) ? ' (unavailable)' : ''}
+                            </option>
+                          ))}
                         </select>
                         <select value={c.format} onChange={(e) => setCourtFormat(c.id, e.target.value)} className="tp-focus tp-input flex-1 px-2 py-1.5 text-sm bg-white">
                           <option>Singles</option>
@@ -1855,6 +1895,9 @@ export default function TennisPairingApp() {
                         </button>
                         {clash && (
                           <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ Same court number used more than once below</div>
+                        )}
+                        {!clash && nowUnavailable && (
+                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ This court was just marked unavailable — pick a different number</div>
                         )}
                       </div>
                     );
@@ -1967,7 +2010,9 @@ export default function TennisPairingApp() {
                                 style={{ color: courtClash ? 'var(--warn)' : 'var(--court)' }}
                               >
                                 {[1, 2, 3, 4, 5, 6].map((n) => (
-                                  <option key={n} value={n}>{n}</option>
+                                  <option key={n} value={n} disabled={unavailableCourts.includes(n)}>
+                                    {n}{unavailableCourts.includes(n) ? ' (unavailable)' : ''}
+                                  </option>
                                 ))}
                               </select>
                               <span className="text-xs font-semibold tracking-wide" style={{ color: 'var(--muted)' }}>· {m.format.toUpperCase()}</span>
