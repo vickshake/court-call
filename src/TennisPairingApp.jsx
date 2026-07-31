@@ -980,11 +980,23 @@ export default function TennisPairingApp() {
     setChangingPin(false);
   }
 
-  function addCourt() {
-    const used = new Set(courts.map((c) => c.courtNumber));
+  function nextAvailableCourtNumber(existingCourts) {
+    const used = new Set(existingCourts.map((c) => c.courtNumber));
     let next = 1;
-    while (used.has(next) && next <= 6) next += 1;
-    persistWeekly({ courts: [...courts, { id: uid(), format: 'Doubles', courtNumber: next }] });
+    while ((used.has(next) || unavailableCourts.includes(next)) && next <= 6) next += 1;
+    return next <= 6 ? next : null;
+  }
+  function addCourt() {
+    const next = nextAvailableCourtNumber(courts);
+    persistWeekly({ courts: [...courts, { id: uid(), format: 'Doubles', courtNumber: next || courts.length + 1 }] });
+  }
+  function addMultipleCourts(n) {
+    const next = [...courts];
+    for (let i = 0; i < n; i++) {
+      const num = nextAvailableCourtNumber(next);
+      next.push({ id: uid(), format: 'Doubles', courtNumber: num || next.length + 1 });
+    }
+    persistWeekly({ courts: next });
   }
   function removeCourt(id) {
     persistWeekly({ courts: courts.filter((c) => c.id !== id) });
@@ -1203,6 +1215,10 @@ export default function TennisPairingApp() {
 
   const playingCount = playingIds.length;
   const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
+  const idealCourtCount = Math.floor(playingCount / 4);
+  const usedNumbers = new Set(courts.map((c) => c.courtNumber));
+  const remainingSlots = [1, 2, 3, 4, 5, 6].filter((n) => !usedNumbers.has(n) && !unavailableCourts.includes(n)).length;
+  const suggestedExtraCourts = Math.min(Math.max(0, idealCourtCount - courts.length), remainingSlots);
   const canGenerate = playingCount >= 2 && courts.length > 0;
 
   const records = {};
@@ -2023,6 +2039,21 @@ export default function TennisPairingApp() {
                 {playingCount > 0 && playingCount < neededPerRound ? ' — with fewer than that, sit-outs rotate fairly across the sets.' : ''}
                 {playingCount > neededPerRound ? ' — more than fits at once, so who sits out rotates set to set.' : ''}
               </div>
+
+              {suggestedExtraCourts > 0 && (
+                <div className="tp-card p-3 flex items-center justify-between gap-2" style={{ borderColor: 'var(--court)' }}>
+                  <div className="text-xs" style={{ color: 'var(--court)' }}>
+                    {playingCount} playing — {courts.length} {courts.length === 1 ? 'court fits' : 'courts fit'} {neededPerRound}. Add {suggestedExtraCourts} more to fit everyone at once?
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => addMultipleCourts(suggestedExtraCourts)}
+                    className="tp-btn-primary tp-focus px-3 py-1.5 text-xs shrink-0"
+                  >
+                    Add {suggestedExtraCourts}
+                  </button>
+                </div>
+              )}
 
               <button type="button" onClick={handleGenerate} disabled={!canGenerate} className="tp-btn-primary tp-focus w-full py-3 flex items-center justify-center gap-2">
                 <Shuffle size={17} />
