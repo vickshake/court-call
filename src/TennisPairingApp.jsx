@@ -81,7 +81,7 @@ function bestMixedSplit(men, women, partnerHist, opponentHist, playerMap) {
   return cA <= cB ? optA : optB;
 }
 
-function buildRound(availableIds, courtFormats, partnerHist, opponentHist, sitOutCount, playerMap) {
+function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutCount, playerMap) {
   let bestRound = null;
   let bestScore = Infinity;
 
@@ -92,11 +92,11 @@ function buildRound(availableIds, courtFormats, partnerHist, opponentHist, sitOu
     const used = new Set();
     const matches = [];
 
-    for (const format of courtFormats) {
+    for (const slot of courtSlots) {
       const candidates = pool.filter((id) => !used.has(id));
-      let actualFormat = format;
+      let actualFormat = slot.format;
 
-      if (format === 'Mixed Doubles') {
+      if (actualFormat === 'Mixed Doubles') {
         const men = candidates.filter((id) => playerMap[id].sex === 'M');
         const women = candidates.filter((id) => playerMap[id].sex === 'F');
         if (men.length < 2 || women.length < 2) actualFormat = 'Doubles';
@@ -124,7 +124,7 @@ function buildRound(availableIds, courtFormats, partnerHist, opponentHist, sitOu
       }
 
       chosen.forEach((id) => used.add(id));
-      matches.push({ format: actualFormat, teamA, teamB });
+      matches.push({ format: actualFormat, teamA, teamB, courtNumber: slot.courtNumber });
     }
 
     const sittingOut = availableIds.filter((id) => !used.has(id));
@@ -153,7 +153,7 @@ function buildRound(availableIds, courtFormats, partnerHist, opponentHist, sitOu
 }
 
 function applyCourtPreferences(matches, playerMap) {
-  const arranged = [...matches];
+  const arranged = matches.map((m) => ({ ...m }));
 
   function preferenceHolder(match, strength) {
     if (!match) return null;
@@ -161,17 +161,23 @@ function applyCourtPreferences(matches, playerMap) {
     return all.find((p) => p.preferredCourt && p.courtPreferenceStrength === strength) || null;
   }
 
+  function findByCourtNumber(courtNumber) {
+    return arranged.findIndex((m) => m.courtNumber === courtNumber);
+  }
+
   function applyPass(strength) {
-    arranged.forEach((match, idx) => {
+    arranged.forEach((match) => {
       const holder = preferenceHolder(match, strength);
       if (!holder) return;
-      const targetIdx = holder.preferredCourt - 1;
-      if (targetIdx < 0 || targetIdx >= arranged.length || targetIdx === idx) return;
-      const occupantFirmHolder = preferenceHolder(arranged[targetIdx], 'firm');
+      if (match.courtNumber === holder.preferredCourt) return; // already there
+      const targetIdx = findByCourtNumber(holder.preferredCourt);
+      if (targetIdx === -1) return; // that court number isn't in play this round
+      const occupant = arranged[targetIdx];
+      const occupantFirmHolder = preferenceHolder(occupant, 'firm');
       if (occupantFirmHolder && strength !== 'firm') return; // never bump a satisfied firm preference for a soft one
-      const tmp = arranged[targetIdx];
-      arranged[targetIdx] = arranged[idx];
-      arranged[idx] = tmp;
+      const myNumber = match.courtNumber;
+      match.courtNumber = occupant.courtNumber;
+      occupant.courtNumber = myNumber;
     });
   }
 
@@ -248,7 +254,7 @@ function formatScheduleForGroupMe(schedule) {
 }
 
 
-function generateSchedule(players, courtFormats, roundCount) {
+function generateSchedule(players, courtSlots, roundCount) {
   const playerMap = {};
   players.forEach((p) => { playerMap[p.id] = p; });
   const ids = players.map((p) => p.id);
@@ -260,7 +266,7 @@ function generateSchedule(players, courtFormats, roundCount) {
 
   const rounds = [];
   for (let r = 0; r < roundCount; r++) {
-    const round = buildRound(ids, courtFormats, partnerHist, opponentHist, sitOutCount, playerMap);
+    const round = buildRound(ids, courtSlots, partnerHist, opponentHist, sitOutCount, playerMap);
     if (!round) break;
     round.matches = applyCourtPreferences(round.matches, playerMap);
     round.matches.forEach((m) => {
@@ -586,10 +592,10 @@ export default function TennisPairingApp() {
   const [directory, setDirectory] = useState([]);
   const [playingIds, setPlayingIds] = useState([]);
   const [courts, setCourts] = useState([
-    { id: 'c1', format: 'Mixed Doubles' },
-    { id: 'c2', format: 'Mixed Doubles' },
-    { id: 'c3', format: 'Doubles' },
-    { id: 'c4', format: 'Doubles' },
+    { id: 'c1', format: 'Mixed Doubles', courtNumber: 1 },
+    { id: 'c2', format: 'Mixed Doubles', courtNumber: 2 },
+    { id: 'c3', format: 'Doubles', courtNumber: 3 },
+    { id: 'c4', format: 'Doubles', courtNumber: 4 },
   ]);
   const [rounds, setRounds] = useState(3);
   const [schedule, setSchedule] = useState(null);
@@ -906,7 +912,10 @@ export default function TennisPairingApp() {
   }
 
   function addCourt() {
-    persistWeekly({ courts: [...courts, { id: uid(), format: 'Doubles' }] });
+    const used = new Set(courts.map((c) => c.courtNumber));
+    let next = 1;
+    while (used.has(next) && next <= 6) next += 1;
+    persistWeekly({ courts: [...courts, { id: uid(), format: 'Doubles', courtNumber: next }] });
   }
   function removeCourt(id) {
     persistWeekly({ courts: courts.filter((c) => c.id !== id) });
@@ -914,13 +923,16 @@ export default function TennisPairingApp() {
   function setCourtFormat(id, format) {
     persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, format } : c)) });
   }
+  function setCourtNumber(id, courtNumber) {
+    persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, courtNumber } : c)) });
+  }
   function setRoundsCount(n) {
     persistWeekly({ rounds: Math.max(1, n) });
   }
 
   function handleGenerate() {
     const players = directory.filter((p) => playingIds.includes(p.id));
-    const result = generateSchedule(players, courts.map((c) => c.format), rounds);
+    const result = generateSchedule(players, courts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds);
     persistWeekly({ schedule: result });
     setTab('results');
   }
@@ -1817,22 +1829,36 @@ export default function TennisPairingApp() {
               <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  This sets up how many courts and which formats — pick the actual physical court number for each match after generating, from Results › Adjust.
+                  Set the court number here to apply it to every set this week. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
                 </div>
                 <div className="space-y-2">
-                  {courts.map((c, i) => (
-                    <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
-                      <span className="tp-display font-bold text-sm w-6" style={{ color: 'var(--muted)' }}>{i + 1}</span>
-                      <select value={c.format} onChange={(e) => setCourtFormat(c.id, e.target.value)} className="tp-focus tp-input flex-1 px-2 py-1.5 text-sm bg-white">
-                        <option>Singles</option>
-                        <option>Doubles</option>
-                        <option>Mixed Doubles</option>
-                      </select>
-                      <button type="button" onClick={() => removeCourt(c.id)} style={{ color: 'var(--muted)' }} aria-label={`Remove court ${i + 1}`}>
-                        <X size={16} />
-                      </button>
-                    </div>
-                  ))}
+                  {courts.map((c, i) => {
+                    const clash = courts.some((other) => other.id !== c.id && other.courtNumber === c.courtNumber);
+                    return (
+                      <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
+                        <select
+                          value={c.courtNumber || i + 1}
+                          onChange={(e) => setCourtNumber(c.id, Number(e.target.value))}
+                          className="tp-focus tp-input font-bold text-sm bg-white px-1.5 py-1"
+                          style={{ color: clash ? 'var(--warn)' : 'var(--court)', width: '3.2rem' }}
+                          aria-label={`Court number for row ${i + 1}`}
+                        >
+                          {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                        <select value={c.format} onChange={(e) => setCourtFormat(c.id, e.target.value)} className="tp-focus tp-input flex-1 px-2 py-1.5 text-sm bg-white">
+                          <option>Singles</option>
+                          <option>Doubles</option>
+                          <option>Mixed Doubles</option>
+                        </select>
+                        <button type="button" onClick={() => removeCourt(c.id)} style={{ color: 'var(--muted)' }} aria-label={`Remove court ${i + 1}`}>
+                          <X size={16} />
+                        </button>
+                        {clash && (
+                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ Same court number used more than once below</div>
+                        )}
+                      </div>
+                    );
+                  })}
                   {courts.length === 0 && (
                     <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Add a court to set up this week's matches.</div>
                   )}
@@ -1940,7 +1966,7 @@ export default function TennisPairingApp() {
                                 className="tp-focus tp-input px-2 py-1 text-xs font-semibold bg-white"
                                 style={{ color: courtClash ? 'var(--warn)' : 'var(--court)' }}
                               >
-                                {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                                {[1, 2, 3, 4, 5, 6].map((n) => (
                                   <option key={n} value={n}>{n}</option>
                                 ))}
                               </select>
