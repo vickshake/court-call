@@ -405,7 +405,9 @@ const DEFAULT_PIN = '1234';
 // Set explicitly by the standalone build's entry point (main.jsx). Inside a Claude artifact
 // this stays false, since that's the only environment where the AI-extraction call below
 // is actually authenticated.
-const IS_STANDALONE = typeof window !== 'undefined' && window.__CC_STANDALONE__ === true;
+function isStandalone() {
+  return typeof window !== 'undefined' && window.__CC_STANDALONE__ === true;
+}
 const SKILL_OPTIONS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
 const THIS_YEAR = new Date().getFullYear();
 
@@ -1285,7 +1287,7 @@ export default function TennisPairingApp() {
               <div className="tp-card p-4 space-y-3">
                 <div className="text-sm font-semibold">Mark several people at once</div>
 
-                {!IS_STANDALONE && (
+                {!isStandalone() && (
                   <details>
                     <summary className="text-xs cursor-pointer" style={{ color: 'var(--court)' }}>
                       Paste from GroupMe instead of typing names
