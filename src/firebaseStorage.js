@@ -1,8 +1,28 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 import { firebaseConfig } from './firebaseConfig';
 
 const app = initializeApp(firebaseConfig);
+
+// App Check: attests that requests genuinely come from this deployed site, not a
+// script talking to Firestore directly. Safe to have running even before Firestore
+// enforcement is turned on in the console - it doesn't block anything by itself.
+//
+// IMPORTANT: replace the placeholder below with the real reCAPTCHA v3 SITE key
+// (not the secret key - the secret key goes into the Firebase console instead,
+// never into this file). Get it from Firebase Console > Security > App Check.
+// Wrapped defensively: with the placeholder still in place, this should not throw,
+// but the try/catch means it can't take the whole app down even if it did.
+try {
+  initializeAppCheck(app, {
+    provider: new ReCaptchaV3Provider('REPLACE_WITH_YOUR_RECAPTCHA_V3_SITE_KEY'),
+    isTokenAutoRefreshEnabled: true,
+  });
+} catch (e) {
+  console.error('App Check init failed (safe to ignore until a real site key is set):', e);
+}
+
 const db = getFirestore(app);
 
 // Everything lives in one collection, one document per storage key. This mirrors the
