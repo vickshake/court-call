@@ -545,6 +545,37 @@ function parseNamesText(text) {
   return deduped;
 }
 
+const TIME_SUFFIX_RE = /\s*\d{1,2}:\d{2}\s*[AP]M\.?\s*$/i;
+const YOU_SUFFIX_RE = /\s*\(you\)\s*$/i;
+
+function extractNamesFromPaste(rawText) {
+  const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
+  const timeStampedLines = lines.filter((l) => TIME_SUFFIX_RE.test(l));
+
+  if (timeStampedLines.length === 0) {
+    // No lines carry a "Name ... 7:22 AM" pattern - this is a plain list of names,
+    // not a pasted chat thread. Use the simple one-per-line parser as before.
+    return parseNamesText(rawText);
+  }
+
+  // Looks like a pasted chat thread. Only lines ending in a timestamp are genuine
+  // "who said this" attribution lines - message content, reaction counts, date
+  // separators ("Today"/"Yesterday"), and avatar-initials lines never end in a
+  // timestamp, so they're excluded automatically rather than needing their own rules.
+  const names = [];
+  const seen = new Set();
+  timeStampedLines.forEach((line) => {
+    let name = line.replace(TIME_SUFFIX_RE, '').trim();
+    name = name.replace(YOU_SUFFIX_RE, '').trim();
+    if (!name || !looksLikeName(name)) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return; // the same person posting more than once shouldn't duplicate
+    seen.add(key);
+    names.push(name);
+  });
+  return names;
+}
+
 const BLANK_FORM = {
   name: '', sex: 'M', usta: '', cta: '3.5', handedness: 'R',
   competitive: '3', serving: '', injuries: '', comments: '',
@@ -570,11 +601,8 @@ export default function TennisPairingApp() {
   const [search, setSearch] = useState('');
   const [todaySearch, setTodaySearch] = useState('');
   const [showInactiveToday, setShowInactiveToday] = useState(false);
-  const [groupMeText, setGroupMeText] = useState('');
   const [namesText, setNamesText] = useState('');
   const [lastBulkMatchedIds, setLastBulkMatchedIds] = useState([]);
-  const [extracting, setExtracting] = useState(false);
-  const [extractError, setExtractError] = useState('');
   const [matchResults, setMatchResults] = useState(null);
 
   const [showAddForm, setShowAddForm] = useState(false);
@@ -745,7 +773,7 @@ export default function TennisPairingApp() {
   }
 
   function handleMatchNames() {
-    const raw = parseNamesText(namesText).map((n) => {
+    const raw = extractNamesFromPaste(namesText).map((n) => {
       const r = matchNameToDirectory(n, directory);
       return r && r.status === 'unmatched' ? { ...r, sex: 'M', cta: '3.5' } : r;
     });
@@ -786,6 +814,10 @@ export default function TennisPairingApp() {
     setMatchResults((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
   }
 
+  function dismissPending(index) {
+    setMatchResults((prev) => prev.filter((_, i) => i !== index));
+  }
+
   function addOnePending(index) {
     const r = matchResults[index];
     if (!r) return;
@@ -818,65 +850,6 @@ export default function TennisPairingApp() {
     }));
   }
 
-  async function callGroupMeExtraction() {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: 'Below is copy-pasted text from a GroupMe group chat where people are replying '
-            + 'to a callout about tennis signups. Some messages are RSVPs ("in", "I\'m in", "IN", '
-            + '"in if numbers work", etc.), some are unrelated chatter, and some are just emoji '
-            + 'reactions with no name attached - ignore all of those, they are not RSVPs.\n\n'
-            + 'Watch for this specific pattern: the person who posted the original callout question '
-            + '(e.g. "who else is in?") often later reports a running headcount ("We have 12", '
-            + '"That\'s 10 so far") without ever writing "I\'m in" themselves, because they\'re '
-            + 'assuming their own participation is understood. If the number of people who gave an '
-            + 'explicit RSVP is exactly one less than the headcount that same person states, include '
-            + 'that asker in the list too - the count implies they\'re part of it.\n\n'
-            + 'Respond with ONLY a JSON array of the names of people who indicated they want to play. '
-            + 'Nothing before it, nothing after it, no markdown fences, no explanation - the entire '
-            + 'response must be parseable as JSON on its own.\n\nTranscript:\n' + groupMeText,
-        }],
-      }),
-    });
-    const data = await response.json();
-    const textBlocks = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-    // Pull out the array even if the model added stray text around it, rather than
-    // requiring the whole response to be pure JSON.
-    const match = textBlocks.match(/\[[\s\S]*\]/);
-    if (!match) return null;
-    try {
-      const parsed = JSON.parse(match[0]);
-      return Array.isArray(parsed) ? parsed : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  async function handleExtractFromGroupMe() {
-    if (!groupMeText.trim()) return;
-    setExtracting(true);
-    setExtractError('');
-    try {
-      let names = await callGroupMeExtraction();
-      if (!names) names = await callGroupMeExtraction(); // one silent retry before giving up
-      if (names && names.length) {
-        setNamesText((prev) => (prev ? prev + '\n' : '') + names.join('\n'));
-      } else {
-        setExtractError('Could not find any names in that text.');
-      }
-    } catch (e) {
-      console.error('Extraction failed', e);
-      setExtractError('Could not read that — you can still type names in directly below.');
-    } finally {
-      setExtracting(false);
-    }
-  }
-
   function toggleActive(id) {
     persistDirectory(directory.map((p) => (p.id === id ? { ...p, active: !p.active } : p)));
   }
@@ -893,6 +866,9 @@ export default function TennisPairingApp() {
 
   function handleStartNewWeek() {
     persistWeekly({ playingIds: [], schedule: null });
+    setMatchResults(null);
+    setNamesText('');
+    setLastBulkMatchedIds([]);
     setConfirmingReset(false);
     setTab('today');
   }
@@ -901,7 +877,6 @@ export default function TennisPairingApp() {
     persistWeekly({ playingIds: [] });
     setMatchResults(null);
     setNamesText('');
-    setGroupMeText('');
     setConfirmingUncheck(false);
   }
 
@@ -1296,39 +1271,15 @@ export default function TennisPairingApp() {
 
               <div className="tp-card p-4 space-y-3">
                 <div className="text-sm font-semibold">Mark several people at once</div>
-
-                {!isStandalone() && (
-                  <details>
-                    <summary className="text-xs cursor-pointer" style={{ color: 'var(--court)' }}>
-                      Paste from GroupMe instead of typing names
-                    </summary>
-                    <div className="mt-2 space-y-2">
-                      <textarea
-                        value={groupMeText}
-                        onChange={(e) => setGroupMeText(e.target.value)}
-                        placeholder="Paste the GroupMe thread here…"
-                        rows={4}
-                        className="tp-focus tp-input w-full px-3 py-2 text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleExtractFromGroupMe}
-                        disabled={extracting || !groupMeText.trim()}
-                        className="tp-btn-secondary tp-focus px-3 py-1.5 text-xs flex items-center gap-1.5"
-                      >
-                        {extracting && <Loader2 size={13} className="animate-spin" />}
-                        {extracting ? 'Reading…' : 'Pull names from this'}
-                      </button>
-                      {extractError && <div className="text-xs" style={{ color: 'var(--clay)' }}>{extractError}</div>}
-                    </div>
-                  </details>
-                )}
+                <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                  Type names one per line, or paste a chat thread straight in — timestamps, banter, and reactions get filtered out automatically.
+                </div>
 
                 <textarea
                   value={namesText}
                   onChange={(e) => setNamesText(e.target.value)}
-                  placeholder="Just names, one per line — e.g. Robb Fox"
-                  rows={4}
+                  placeholder="Just names, one per line — or paste a chat thread here"
+                  rows={5}
                   className="tp-focus tp-input w-full px-3 py-2 text-sm"
                 />
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>
@@ -1399,6 +1350,9 @@ export default function TennisPairingApp() {
                             </select>
                             <button type="button" onClick={() => addOnePending(i)} className="tp-input px-2 py-1.5 text-xs shrink-0" style={{ color: 'var(--court)' }}>
                               Add
+                            </button>
+                            <button type="button" onClick={() => dismissPending(i)} className="tp-input px-2 py-1.5 text-xs shrink-0" style={{ color: 'var(--muted)' }} aria-label={`Dismiss ${r.input}`}>
+                              <X size={13} />
                             </button>
                           </div>
                         ) : null)}
@@ -2112,7 +2066,7 @@ export default function TennisPairingApp() {
 
           {isStandalone() && (
             <div className="text-center py-4 text-xs" style={{ color: 'var(--muted)', opacity: 0.6 }}>
-              Built {formatBuildTime(typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '')} · Vick Shaker
+              v{typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : '—'} · Built {formatBuildTime(typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '')} · Vick Shaker
             </div>
           )}
         </div>
