@@ -16,7 +16,7 @@ const app = initializeApp(firebaseConfig);
 // but the try/catch means it can't take the whole app down even if it did.
 try {
   initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider('REPLACE_WITH_YOUR_RECAPTCHA_V3_SITE_KEY'),
+    provider: new ReCaptchaV3Provider('6Lc8JG8tAAAAALUm2UXnfIWFEUZfpcVh03F2d6gp'),
     isTokenAutoRefreshEnabled: true,
   });
 } catch (e) {
