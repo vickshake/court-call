@@ -416,6 +416,19 @@ function isStandalone() {
 }
 const SKILL_OPTIONS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
 const THIS_YEAR = new Date().getFullYear();
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function formatSessionDate(iso) {
+  if (!iso) return 'today';
+  const [y, m, d] = iso.split('-').map(Number);
+  // Built from local year/month/day components on purpose - parsing "YYYY-MM-DD" directly
+  // with `new Date(iso)` reads it as UTC midnight, which can silently roll back to the
+  // previous day once displayed in a timezone behind UTC (exactly the kind of off-by-one
+  // this whole feature exists to prevent).
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+}
 
 function PlayerToggleRow({ p, playing, onToggle }) {
   return (
@@ -598,6 +611,7 @@ export default function TennisPairingApp() {
     { id: 'c4', format: 'Doubles', courtNumber: 4 },
   ]);
   const [unavailableCourts, setUnavailableCourts] = useState([]);
+  const [sessionDate, setSessionDate] = useState(todayISO());
   const [rounds, setRounds] = useState(3);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
@@ -664,6 +678,7 @@ export default function TennisPairingApp() {
       setPlayingIds(w.playingIds || []);
       if (w.courts) setCourts(w.courts);
       setUnavailableCourts(w.unavailableCourts || []);
+      setSessionDate(w.sessionDate || todayISO());
       if (w.rounds) setRounds(w.rounds);
       setSchedule(w.schedule || null);
     }
@@ -701,12 +716,14 @@ export default function TennisPairingApp() {
       playingIds: partial.playingIds !== undefined ? partial.playingIds : playingIds,
       courts: partial.courts !== undefined ? partial.courts : courts,
       unavailableCourts: partial.unavailableCourts !== undefined ? partial.unavailableCourts : unavailableCourts,
+      sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
     };
     if (partial.playingIds !== undefined) setPlayingIds(partial.playingIds);
     if (partial.courts !== undefined) setCourts(partial.courts);
     if (partial.unavailableCourts !== undefined) setUnavailableCourts(partial.unavailableCourts);
+    if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
     if (partial.rounds !== undefined) setRounds(partial.rounds);
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
     try {
@@ -875,7 +892,7 @@ export default function TennisPairingApp() {
   }
 
   function handleStartNewWeek() {
-    persistWeekly({ playingIds: [], schedule: null });
+    persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), unavailableCourts: [] });
     setMatchResults(null);
     setNamesText('');
     setLastBulkMatchedIds([]);
@@ -950,7 +967,7 @@ export default function TennisPairingApp() {
   }
 
   function logResult(setNumber, court, format, teamA, teamB, winner) {
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = sessionDate;
     const recordId = `${dateStr}-set${setNumber}-court${court}-${matchIdentity(teamA, teamB)}`;
     const nameOf = (id) => (schedule.playerMap[id] ? schedule.playerMap[id].name : '?');
     const entry = {
@@ -970,7 +987,7 @@ export default function TennisPairingApp() {
   }
 
   function getLoggedWinner(setNumber, court, teamA, teamB) {
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = sessionDate;
     const found = history.find((h) => h.id === `${dateStr}-set${setNumber}-court${court}-${matchIdentity(teamA, teamB)}`);
     return found ? found.winner : null;
   }
@@ -1251,8 +1268,17 @@ export default function TennisPairingApp() {
 
           {tab === 'today' && (
             <div className="px-4 sm:px-5 py-4 space-y-5">
+              <div className="tp-card p-3">
+                <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--muted)' }}>Playing on</label>
+                <input
+                  type="date"
+                  value={sessionDate}
+                  onChange={(e) => persistWeekly({ sessionDate: e.target.value })}
+                  className="tp-focus tp-input px-3 py-2 text-sm w-full"
+                />
+              </div>
               <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
-                Tap a name to mark them in for today. This list is what resets when you start a new week — the full directory underneath stays put.
+                Tap a name to mark them in for {formatSessionDate(sessionDate)}. This list is what resets when you start a new week — the full directory underneath stays put.
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -1835,9 +1861,9 @@ export default function TennisPairingApp() {
           {tab === 'courts' && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
               <div>
-                <div className="text-sm font-semibold mb-1">Courts unavailable today</div>
+                <div className="text-sm font-semibold mb-1">Courts unavailable {formatSessionDate(sessionDate)}</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  Tap any that are off-limits today — pro coaching, USTA matches, etc. They'll be grayed out below so you can't pick them by accident.
+                  Tap any that are off-limits that day — pro coaching, USTA matches, etc. They'll be grayed out below so you can't pick them by accident.
                 </div>
                 <div className="flex gap-2">
                   {[1, 2, 3, 4, 5, 6].map((n) => {
