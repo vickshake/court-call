@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
-import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 import { firebaseConfig } from './firebaseConfig';
 
 const app = initializeApp(firebaseConfig);
@@ -9,18 +9,18 @@ const app = initializeApp(firebaseConfig);
 // script talking to Firestore directly. Safe to have running even before Firestore
 // enforcement is turned on in the console - it doesn't block anything by itself.
 //
-// IMPORTANT: replace the placeholder below with the real reCAPTCHA v3 SITE key
-// (not the secret key - the secret key goes into the Firebase console instead,
-// never into this file). Get it from Firebase Console > Security > App Check.
+// IMPORTANT: replace the placeholder below with the real reCAPTCHA Enterprise Key ID
+// (the same one shown in Google Cloud Console under Fraud Defense - no separate
+// secret key needed for Enterprise, unlike classic reCAPTCHA v3).
 // Wrapped defensively: with the placeholder still in place, this should not throw,
 // but the try/catch means it can't take the whole app down even if it did.
 try {
   initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider('6Lc8JG8tAAAAALUm2UXnfIWFEUZfpcVh03F2d6gp'),
+    provider: new ReCaptchaEnterpriseProvider('6Lc8JG8tAAAAALUm2UXnfIWFEUZfpcVh03F2d6gp'),
     isTokenAutoRefreshEnabled: true,
   });
 } catch (e) {
-  console.error('App Check init failed (safe to ignore until a real site key is set):', e);
+  console.error('App Check init failed:', e);
 }
 
 const db = getFirestore(app);
