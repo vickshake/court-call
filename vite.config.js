@@ -5,6 +5,11 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    // Stamped automatically every real build (local or GitHub Actions) - no manual
+    // version bumping needed. Read as __BUILD_TIME__ in the app, shown in the footer.
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   plugins: [
     react(),
     tailwindcss(),

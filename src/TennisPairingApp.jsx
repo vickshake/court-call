@@ -442,6 +442,16 @@ function PlayerToggleRow({ p, playing, onToggle }) {
   );
 }
 
+function formatBuildTime(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
 function normalizeName(s) {
   return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -2097,6 +2107,12 @@ export default function TennisPairingApp() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {isStandalone() && (
+            <div className="text-center py-4 text-xs" style={{ color: 'var(--muted)', opacity: 0.6 }}>
+              Built {formatBuildTime(typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '')} · Vick Shaker
             </div>
           )}
         </div>
