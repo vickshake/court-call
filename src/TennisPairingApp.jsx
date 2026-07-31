@@ -1816,6 +1816,9 @@ export default function TennisPairingApp() {
             <div className="px-4 sm:px-5 py-4 space-y-4">
               <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
+                <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
+                  This sets up how many courts and which formats — pick the actual physical court number for each match after generating, from Results › Adjust.
+                </div>
                 <div className="space-y-2">
                   {courts.map((c, i) => (
                     <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
