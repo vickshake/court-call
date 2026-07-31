@@ -429,6 +429,15 @@ function formatSessionDate(iso) {
   const date = new Date(y, m - 1, d);
   return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 }
+const TIME_OPTIONS = (() => {
+  const opts = [];
+  for (let mins = 8 * 60; mins <= 20 * 60; mins += 30) {
+    const h = String(Math.floor(mins / 60)).padStart(2, '0');
+    const m = String(mins % 60).padStart(2, '0');
+    opts.push(`${h}:${m}`);
+  }
+  return opts;
+})();
 function formatSessionTime(hhmm) {
   if (!hhmm) return '';
   const [h, min] = hhmm.split(':').map(Number);
@@ -436,10 +445,29 @@ function formatSessionTime(hhmm) {
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${String(min).padStart(2, '0')} ${period}`;
 }
-function formatSessionDateTime(iso, hhmm) {
+const DURATION_OPTIONS = [30, 60, 90, 120, 150, 180, 210, 240]; // minutes: 30min up to 4hr
+function formatDuration(mins) {
+  const m = Number(mins);
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (h === 0) return `${rem} min`;
+  if (rem === 0) return `${h} hr`;
+  return `${h}.5 hr`;
+}
+function addMinutesToTime(hhmm, minsToAdd) {
+  const [h, min] = hhmm.split(':').map(Number);
+  const total = h * 60 + min + Number(minsToAdd);
+  const endH = Math.floor(total / 60) % 24;
+  const endM = total % 60;
+  return `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+}
+function formatSessionDateTime(iso, hhmm, durationMins) {
   const datePart = formatSessionDate(iso);
-  const timePart = formatSessionTime(hhmm);
-  return timePart ? `${datePart} at ${timePart}` : datePart;
+  if (!hhmm) return datePart;
+  const startPart = formatSessionTime(hhmm);
+  if (!durationMins) return `${datePart} at ${startPart}`;
+  const endPart = formatSessionTime(addMinutesToTime(hhmm, durationMins));
+  return `${datePart}, ${startPart} - ${endPart}`;
 }
 
 function PlayerToggleRow({ p, playing, onToggle }) {
@@ -625,6 +653,7 @@ export default function TennisPairingApp() {
   const [unavailableCourts, setUnavailableCourts] = useState([]);
   const [sessionDate, setSessionDate] = useState(todayISO());
   const [sessionTime, setSessionTime] = useState('');
+  const [sessionDuration, setSessionDuration] = useState('');
   const [rounds, setRounds] = useState(3);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
@@ -693,6 +722,7 @@ export default function TennisPairingApp() {
       setUnavailableCourts(w.unavailableCourts || []);
       setSessionDate(w.sessionDate || todayISO());
       setSessionTime(w.sessionTime || '');
+      setSessionDuration(w.sessionDuration || '');
       if (w.rounds) setRounds(w.rounds);
       setSchedule(w.schedule || null);
     }
@@ -732,6 +762,7 @@ export default function TennisPairingApp() {
       unavailableCourts: partial.unavailableCourts !== undefined ? partial.unavailableCourts : unavailableCourts,
       sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
       sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : sessionTime,
+      sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
     };
@@ -740,6 +771,7 @@ export default function TennisPairingApp() {
     if (partial.unavailableCourts !== undefined) setUnavailableCourts(partial.unavailableCourts);
     if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
     if (partial.sessionTime !== undefined) setSessionTime(partial.sessionTime);
+    if (partial.sessionDuration !== undefined) setSessionDuration(partial.sessionDuration);
     if (partial.rounds !== undefined) setRounds(partial.rounds);
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
     try {
@@ -908,7 +940,7 @@ export default function TennisPairingApp() {
   }
 
   function handleStartNewWeek() {
-    persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), sessionTime: '', unavailableCourts: [] });
+    persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), sessionTime: '', sessionDuration: '', unavailableCourts: [] });
     setMatchResults(null);
     setNamesText('');
     setLastBulkMatchedIds([]);
@@ -1293,16 +1325,28 @@ export default function TennisPairingApp() {
                     onChange={(e) => persistWeekly({ sessionDate: e.target.value })}
                     className="tp-focus tp-input px-3 py-2 text-sm flex-1"
                   />
-                  <input
-                    type="time"
+                  <select
                     value={sessionTime}
                     onChange={(e) => persistWeekly({ sessionTime: e.target.value })}
-                    className="tp-focus tp-input px-3 py-2 text-sm flex-1"
-                  />
+                    className="tp-focus tp-input px-3 py-2 text-sm flex-1 bg-white"
+                  >
+                    <option value="">Time?</option>
+                    {TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatSessionTime(t)}</option>)}
+                  </select>
+                  <select
+                    value={sessionDuration}
+                    onChange={(e) => persistWeekly({ sessionDuration: e.target.value })}
+                    disabled={!sessionTime}
+                    className="tp-focus tp-input px-3 py-2 text-sm flex-1 bg-white"
+                    style={{ opacity: sessionTime ? 1 : 0.5 }}
+                  >
+                    <option value="">For how long?</option>
+                    {DURATION_OPTIONS.map((d) => <option key={d} value={d}>{formatDuration(d)}</option>)}
+                  </select>
                 </div>
               </div>
               <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
-                Tap a name to mark them in for {formatSessionDateTime(sessionDate, sessionTime)}. This list is what resets when you start a new week — the full directory underneath stays put.
+                Tap a name to mark them in for {formatSessionDateTime(sessionDate, sessionTime, sessionDuration)}. This list is what resets when you start a new week — the full directory underneath stays put.
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -1885,7 +1929,7 @@ export default function TennisPairingApp() {
           {tab === 'courts' && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
               <div>
-                <div className="text-sm font-semibold mb-1">Courts unavailable {formatSessionDateTime(sessionDate, sessionTime)}</div>
+                <div className="text-sm font-semibold mb-1">Courts unavailable {formatSessionDateTime(sessionDate, sessionTime, sessionDuration)}</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
                   Tap any that are off-limits that day — pro coaching, USTA matches, etc. They'll be grayed out below so you can't pick them by accident.
                 </div>
