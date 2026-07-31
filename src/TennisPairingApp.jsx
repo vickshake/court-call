@@ -925,9 +925,13 @@ export default function TennisPairingApp() {
     setTab('results');
   }
 
+  function matchIdentity(teamA, teamB) {
+    return [...teamA, ...teamB].slice().sort().join('-');
+  }
+
   function logResult(setNumber, court, format, teamA, teamB, winner) {
     const dateStr = new Date().toISOString().slice(0, 10);
-    const recordId = `${dateStr}-set${setNumber}-court${court}`;
+    const recordId = `${dateStr}-set${setNumber}-court${court}-${matchIdentity(teamA, teamB)}`;
     const nameOf = (id) => (schedule.playerMap[id] ? schedule.playerMap[id].name : '?');
     const entry = {
       id: recordId,
@@ -945,9 +949,9 @@ export default function TennisPairingApp() {
     persistHistory([...withoutOld, entry]);
   }
 
-  function getLoggedWinner(setNumber, court) {
+  function getLoggedWinner(setNumber, court, teamA, teamB) {
     const dateStr = new Date().toISOString().slice(0, 10);
-    const found = history.find((h) => h.id === `${dateStr}-set${setNumber}-court${court}`);
+    const found = history.find((h) => h.id === `${dateStr}-set${setNumber}-court${court}-${matchIdentity(teamA, teamB)}`);
     return found ? found.winner : null;
   }
 
@@ -965,6 +969,13 @@ export default function TennisPairingApp() {
     const newRounds = schedule.rounds.map((r, i) => (i === ri ? newRound : r));
     persistWeekly({ schedule: { ...schedule, rounds: newRounds } });
     setSelectedPlayerId(null);
+  }
+
+  function setCourtNumberOverride(roundIndex, matchIndex, newCourtNumber) {
+    const round = schedule.rounds[roundIndex];
+    const newMatches = round.matches.map((m, i) => (i === matchIndex ? { ...m, courtNumber: newCourtNumber } : m));
+    const newRounds = schedule.rounds.map((r, i) => (i === roundIndex ? { ...r, matches: newMatches } : r));
+    persistWeekly({ schedule: { ...schedule, rounds: newRounds } });
   }
 
   async function handleCopyForGroupMe() {
@@ -1175,7 +1186,10 @@ export default function TennisPairingApp() {
           )}
           <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b" style={{ borderColor: 'var(--line)' }}>
             <div>
-              <div className="tp-display text-2xl font-extrabold leading-none">COURT CALL</div>
+              <div className="flex items-center gap-2">
+                <div className="tp-display text-2xl font-extrabold leading-none">COURT CALL</div>
+                <span className="text-xs font-semibold px-1.5 py-0.5 rounded" style={{ background: 'var(--court-tint)', color: 'var(--court)', letterSpacing: '0.03em' }}>BETA</span>
+              </div>
               <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>Weekly pairing sheet</div>
             </div>
             <div className="text-right">
@@ -1874,7 +1888,7 @@ export default function TennisPairingApp() {
                   </div>
                   {editingRoundIndex === ri && (
                     <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                      Tap two players (including in Sitting out) to swap their spots.
+                      Tap two players (including in Sitting out) to swap their spots, or use the dropdown to change which court a match is on.
                     </div>
                   )}
                   <div className="space-y-3">
@@ -1882,12 +1896,14 @@ export default function TennisPairingApp() {
                       const skillA = avgSkill(m.teamA, schedule.playerMap);
                       const skillB = avgSkill(m.teamB, schedule.playerMap);
                       const total = skillA + skillB || 1;
-                      const court = String(mi + 1);
-                      const winner = getLoggedWinner(ri + 1, court);
+                      const court = String(m.courtNumber || (mi + 1));
+                      const winner = getLoggedWinner(ri + 1, court, m.teamA, m.teamB);
                       const notesA = m.teamA.map((id) => schedule.playerMap[id]).filter((pl) => pl.injuries || pl.comments);
                       const notesB = m.teamB.map((id) => schedule.playerMap[id]).filter((pl) => pl.injuries || pl.comments);
                       const editing = editingRoundIndex === ri;
                       const feedback = editing ? matchFeedback(m, schedule.rounds, ri, schedule.playerMap) : null;
+                      const otherCourtNumbers = round.matches.filter((_, i) => i !== mi).map((om, omi) => String(om.courtNumber || (omi + 1)));
+                      const courtClash = editing && otherCourtNumbers.includes(court);
                       const renderTeam = (team, align) => editing ? (
                         <div className={`flex flex-wrap gap-1 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
                           {team.map((id) => (
@@ -1912,9 +1928,27 @@ export default function TennisPairingApp() {
                       );
                       return (
                         <div key={mi} className="tp-card p-4">
-                          <div className="text-xs font-semibold mb-2 tracking-wide" style={{ color: 'var(--muted)' }}>
-                            COURT {court} · {m.format.toUpperCase()}
-                          </div>
+                          {editing ? (
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-xs font-semibold tracking-wide" style={{ color: 'var(--muted)' }}>COURT</span>
+                              <select
+                                value={court}
+                                onChange={(e) => setCourtNumberOverride(ri, mi, e.target.value)}
+                                className="tp-focus tp-input px-2 py-1 text-xs font-semibold bg-white"
+                                style={{ color: courtClash ? 'var(--warn)' : 'var(--court)' }}
+                              >
+                                {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                                  <option key={n} value={n}>{n}</option>
+                                ))}
+                              </select>
+                              <span className="text-xs font-semibold tracking-wide" style={{ color: 'var(--muted)' }}>· {m.format.toUpperCase()}</span>
+                              {courtClash && <span className="text-xs" style={{ color: 'var(--warn)' }}>⚠ also used below</span>}
+                            </div>
+                          ) : (
+                            <div className="text-xs font-semibold mb-2 tracking-wide" style={{ color: 'var(--muted)' }}>
+                              COURT {court} · {m.format.toUpperCase()}
+                            </div>
+                          )}
                           <div className="flex items-center gap-3">
                             <div className="flex-1">{renderTeam(m.teamA, 'right')}</div>
                             <div className="tp-vs text-sm px-1">VS</div>
