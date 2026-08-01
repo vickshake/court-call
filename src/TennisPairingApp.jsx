@@ -152,6 +152,19 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
   return bestRound;
 }
 
+function computeCourtAssignments(courtsList, unavailableCourts) {
+  // 1-4 always tried before 5-6, simply because ascending order already puts them first.
+  // Each number handed out at most once, so two slots colliding is structurally impossible -
+  // not just discouraged, actually prevented by construction.
+  const priority = [1, 2, 3, 4, 5, 6].filter((n) => !unavailableCourts.includes(n));
+  const used = new Set();
+  return courtsList.map((c) => {
+    const num = priority.find((n) => !used.has(n));
+    if (num !== undefined) used.add(num);
+    return { ...c, courtNumber: num !== undefined ? num : null };
+  });
+}
+
 function applyCourtPreferences(matches, playerMap) {
   const arranged = matches.map((m) => ({ ...m }));
 
@@ -429,6 +442,19 @@ function formatSessionDate(iso) {
   const date = new Date(y, m - 1, d);
   return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 }
+// Half Moon Bay, CA (94019) - city center coordinates
+const WEATHER_LAT = 37.4636;
+const WEATHER_LON = -122.4286;
+
+function uvCategory(uv) {
+  if (uv == null) return null;
+  if (uv < 3) return 'Low';
+  if (uv < 6) return 'Moderate';
+  if (uv < 8) return 'High';
+  if (uv < 11) return 'Very High';
+  return 'Extreme';
+}
+
 const TIME_OPTIONS = (() => {
   const opts = [];
   for (let mins = 8 * 60; mins <= 20 * 60; mins += 30) {
@@ -654,6 +680,8 @@ export default function TennisPairingApp() {
   const [sessionDate, setSessionDate] = useState(todayISO());
   const [sessionTime, setSessionTime] = useState('');
   const [sessionDuration, setSessionDuration] = useState('');
+  const [weather, setWeather] = useState(null);
+  const [weatherStatus, setWeatherStatus] = useState('idle'); // idle | loading | ready | unavailable | error
   const [rounds, setRounds] = useState(3);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
@@ -742,6 +770,32 @@ export default function TennisPairingApp() {
 
   useEffect(() => { loadAll().then(() => setLoaded(true)); }, [loadAll]);
 
+  useEffect(() => {
+    if (!sessionDate) { setWeatherStatus('idle'); return; }
+    let cancelled = false;
+    setWeatherStatus('loading');
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
+      + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max&temperature_unit=fahrenheit`
+      + `&timezone=America%2FLos_Angeles&start_date=${sessionDate}&end_date=${sessionDate}`;
+    fetch(url)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const hi = data && data.daily && data.daily.temperature_2m_max ? data.daily.temperature_2m_max[0] : null;
+        const lo = data && data.daily && data.daily.temperature_2m_min ? data.daily.temperature_2m_min[0] : null;
+        const uv = data && data.daily && data.daily.uv_index_max ? data.daily.uv_index_max[0] : null;
+        if (hi == null && lo == null) {
+          setWeatherStatus('unavailable'); // date outside the forecast window (too far out)
+          setWeather(null);
+        } else {
+          setWeather({ hi, lo, uv });
+          setWeatherStatus('ready');
+        }
+      })
+      .catch(() => { if (!cancelled) { setWeatherStatus('error'); setWeather(null); } });
+    return () => { cancelled = true; };
+  }, [sessionDate]);
+
   async function persistDirectory(next) {
     setDirectory(next);
     try {
@@ -755,9 +809,16 @@ export default function TennisPairingApp() {
     }
   }
 
+  const MAX_PLAYING = 24; // 6 courts x 4 - the real ceiling this app can ever pair at once
   async function persistWeekly(partial) {
+    let incomingPlayingIds = partial.playingIds;
+    let capNotice = '';
+    if (incomingPlayingIds !== undefined && incomingPlayingIds.length > MAX_PLAYING) {
+      capNotice = `Only the first ${MAX_PLAYING} stuck — that's the most this app can pair at once (6 courts × 4).`;
+      incomingPlayingIds = incomingPlayingIds.slice(0, MAX_PLAYING);
+    }
     const next = {
-      playingIds: partial.playingIds !== undefined ? partial.playingIds : playingIds,
+      playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : playingIds,
       courts: partial.courts !== undefined ? partial.courts : courts,
       unavailableCourts: partial.unavailableCourts !== undefined ? partial.unavailableCourts : unavailableCourts,
       sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
@@ -766,7 +827,7 @@ export default function TennisPairingApp() {
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
     };
-    if (partial.playingIds !== undefined) setPlayingIds(partial.playingIds);
+    if (incomingPlayingIds !== undefined) setPlayingIds(incomingPlayingIds);
     if (partial.courts !== undefined) setCourts(partial.courts);
     if (partial.unavailableCourts !== undefined) setUnavailableCourts(partial.unavailableCourts);
     if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
@@ -776,7 +837,7 @@ export default function TennisPairingApp() {
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
     try {
       await window.storage.set(WEEKLY_KEY, JSON.stringify(next), true);
-      setSaveError('');
+      setSaveError(capNotice);
     } catch (e) {
       console.error('weekly save failed', e);
       setSaveError("Your last change didn't save — check your connection and try that action again.");
@@ -1004,9 +1065,6 @@ export default function TennisPairingApp() {
   function setCourtFormat(id, format) {
     persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, format } : c)) });
   }
-  function setCourtNumber(id, courtNumber) {
-    persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, courtNumber } : c)) });
-  }
   function toggleCourtUnavailable(n) {
     const next = unavailableCourts.includes(n) ? unavailableCourts.filter((x) => x !== n) : [...unavailableCourts, n];
     persistWeekly({ unavailableCourts: next });
@@ -1017,7 +1075,8 @@ export default function TennisPairingApp() {
 
   function handleGenerate() {
     const players = directory.filter((p) => playingIds.includes(p.id));
-    const result = generateSchedule(players, courts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds);
+    const usableCourts = assignedCourts.filter((c) => c.courtNumber !== null);
+    const result = generateSchedule(players, usableCourts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds);
     persistWeekly({ schedule: result });
     setTab('results');
   }
@@ -1214,12 +1273,14 @@ export default function TennisPairingApp() {
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
 
   const playingCount = playingIds.length;
+  const assignedCourts = computeCourtAssignments(courts, unavailableCourts);
   const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
   const idealCourtCount = Math.floor(playingCount / 4);
-  const usedNumbers = new Set(courts.map((c) => c.courtNumber));
+  const usedNumbers = new Set(assignedCourts.map((c) => c.courtNumber).filter((n) => n !== null));
   const remainingSlots = [1, 2, 3, 4, 5, 6].filter((n) => !usedNumbers.has(n) && !unavailableCourts.includes(n)).length;
   const suggestedExtraCourts = Math.min(Math.max(0, idealCourtCount - courts.length), remainingSlots);
-  const canGenerate = playingCount >= 2 && courts.length > 0;
+  const canFillAtLeastOneCourt = courts.some((c) => playingCount >= (c.format === 'Singles' ? 2 : 4));
+  const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
 
   const records = {};
   directory.forEach((p) => { records[p.id] = { wins: 0, losses: 0, name: p.name }; });
@@ -1360,6 +1421,18 @@ export default function TennisPairingApp() {
                     {DURATION_OPTIONS.map((d) => <option key={d} value={d}>{formatDuration(d)}</option>)}
                   </select>
                 </div>
+                {weatherStatus === 'loading' && (
+                  <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>Checking weather…</div>
+                )}
+                {weatherStatus === 'ready' && weather && (
+                  <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
+                    Half Moon Bay forecast: {Math.round(weather.hi)}°F / {Math.round(weather.lo)}°F
+                    {weather.uv != null && ` · Sun exposure: ${uvCategory(weather.uv)} (UV ${Math.round(weather.uv)})`}
+                  </div>
+                )}
+                {weatherStatus === 'unavailable' && (
+                  <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>Forecast isn't available this far out yet — check back closer to the date.</div>
+                )}
               </div>
               <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
                 Tap a name to mark them in for {formatSessionDateTime(sessionDate, sessionTime, sessionDuration)}. This list is what resets when you start a new week — the full directory underneath stays put.
@@ -1974,44 +2047,31 @@ export default function TennisPairingApp() {
               <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  Set the court number here to apply it to every set this week. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
+                  Court numbers are assigned automatically — 1 through 4 first, 5 and 6 only if needed and available. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
                 </div>
                 <div className="space-y-2">
-                  {courts.map((c, i) => {
-                    const clash = courts.some((other) => other.id !== c.id && other.courtNumber === c.courtNumber);
-                    const nowUnavailable = unavailableCourts.includes(c.courtNumber);
-                    return (
-                      <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
-                        <select
-                          value={c.courtNumber || i + 1}
-                          onChange={(e) => setCourtNumber(c.id, Number(e.target.value))}
-                          className="tp-focus tp-input font-bold text-sm bg-white px-1.5 py-1"
-                          style={{ color: clash || nowUnavailable ? 'var(--warn)' : 'var(--court)', width: '3.2rem' }}
-                          aria-label={`Court number for row ${i + 1}`}
-                        >
-                          {[1, 2, 3, 4, 5, 6].map((n) => (
-                            <option key={n} value={n} disabled={unavailableCourts.includes(n) && n !== c.courtNumber}>
-                              {n}{unavailableCourts.includes(n) ? ' (unavailable)' : ''}
-                            </option>
-                          ))}
-                        </select>
-                        <select value={c.format} onChange={(e) => setCourtFormat(c.id, e.target.value)} className="tp-focus tp-input flex-1 px-2 py-1.5 text-sm bg-white">
-                          <option>Singles</option>
-                          <option>Doubles</option>
-                          <option>Mixed Doubles</option>
-                        </select>
-                        <button type="button" onClick={() => removeCourt(c.id)} style={{ color: 'var(--muted)' }} aria-label={`Remove court ${i + 1}`}>
-                          <X size={16} />
-                        </button>
-                        {clash && (
-                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ Same court number used more than once below</div>
-                        )}
-                        {!clash && nowUnavailable && (
-                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ This court was just marked unavailable — pick a different number</div>
-                        )}
+                  {assignedCourts.map((c, i) => (
+                    <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
+                      <div
+                        className="tp-display font-bold text-sm flex items-center justify-center rounded-md"
+                        style={{ color: c.courtNumber ? 'var(--court)' : 'var(--warn)', background: 'var(--court-tint)', width: '2.2rem', height: '2.2rem' }}
+                        aria-label={`Auto-assigned court number for row ${i + 1}`}
+                      >
+                        {c.courtNumber || '—'}
                       </div>
-                    );
-                  })}
+                      <select value={c.format} onChange={(e) => setCourtFormat(c.id, e.target.value)} className="tp-focus tp-input flex-1 px-2 py-1.5 text-sm bg-white">
+                        <option>Singles</option>
+                        <option>Doubles</option>
+                        <option>Mixed Doubles</option>
+                      </select>
+                      <button type="button" onClick={() => removeCourt(c.id)} style={{ color: 'var(--muted)' }} aria-label={`Remove court ${i + 1}`}>
+                        <X size={16} />
+                      </button>
+                      {!c.courtNumber && (
+                        <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ No court number left to assign — remove a court above or free one up</div>
+                      )}
+                    </div>
+                  ))}
                   {courts.length === 0 && (
                     <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Add a court to set up this week's matches.</div>
                   )}
@@ -2052,6 +2112,12 @@ export default function TennisPairingApp() {
                   >
                     Add {suggestedExtraCourts}
                   </button>
+                </div>
+              )}
+
+              {playingCount >= 2 && courts.length > 0 && !canFillAtLeastOneCourt && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
+                  ⚠ {playingCount} playing isn't enough to fill any court as currently set up (Doubles/Mixed need 4, Singles needs 2). Mark more people playing, add a Singles court, or change a court's format.
                 </div>
               )}
 
