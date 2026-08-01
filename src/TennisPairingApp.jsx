@@ -152,11 +152,11 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
   return bestRound;
 }
 
-function computeCourtAssignments(courtsList, unavailableCourts) {
+function computeCourtAssignments(courtsList) {
   // 1-4 always tried before 5-6, simply because ascending order already puts them first.
   // Each number handed out at most once, so two slots colliding is structurally impossible -
   // not just discouraged, actually prevented by construction.
-  const priority = [1, 2, 3, 4, 5, 6].filter((n) => !unavailableCourts.includes(n));
+  const priority = [1, 2, 3, 4, 5, 6];
   const used = new Set();
   return courtsList.map((c) => {
     const num = priority.find((n) => !used.has(n));
@@ -455,6 +455,19 @@ function uvCategory(uv) {
   return 'Extreme';
 }
 
+function weatherDisplay(code) {
+  // WMO weather interpretation codes, per Open-Meteo's documented table.
+  if (code === 0) return { icon: '☀️', label: 'Clear', color: '#D97706' };
+  if (code === 1 || code === 2) return { icon: '🌤️', label: 'Mostly clear', color: '#D97706' };
+  if (code === 3) return { icon: '☁️', label: 'Overcast', color: '#64748B' };
+  if (code === 45 || code === 48) return { icon: '🌫️', label: 'Fog', color: '#64748B' };
+  if ([51, 53, 55, 56, 57].includes(code)) return { icon: '🌦️', label: 'Drizzle', color: '#2563EB' };
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return { icon: '🌧️', label: 'Rain', color: '#2563EB' };
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return { icon: '❄️', label: 'Snow', color: '#0EA5E9' };
+  if ([95, 96, 99].includes(code)) return { icon: '⛈️', label: 'Storms', color: '#7C3AED' };
+  return { icon: '🌡️', label: '', color: 'var(--muted)' };
+}
+
 const TIME_OPTIONS = (() => {
   const opts = [];
   for (let mins = 8 * 60; mins <= 20 * 60; mins += 30) {
@@ -676,7 +689,6 @@ export default function TennisPairingApp() {
     { id: 'c3', format: 'Doubles', courtNumber: 3 },
     { id: 'c4', format: 'Doubles', courtNumber: 4 },
   ]);
-  const [unavailableCourts, setUnavailableCourts] = useState([]);
   const [sessionDate, setSessionDate] = useState(todayISO());
   const [sessionTime, setSessionTime] = useState('');
   const [sessionDuration, setSessionDuration] = useState('');
@@ -747,7 +759,6 @@ export default function TennisPairingApp() {
       const w = JSON.parse(weeklyResult.value.value);
       setPlayingIds(w.playingIds || []);
       if (w.courts) setCourts(w.courts);
-      setUnavailableCourts(w.unavailableCourts || []);
       setSessionDate(w.sessionDate || todayISO());
       setSessionTime(w.sessionTime || '');
       setSessionDuration(w.sessionDuration || '');
@@ -775,7 +786,7 @@ export default function TennisPairingApp() {
     let cancelled = false;
     setWeatherStatus('loading');
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
-      + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max&temperature_unit=fahrenheit`
+      + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max,weather_code&temperature_unit=fahrenheit`
       + `&timezone=America%2FLos_Angeles&start_date=${sessionDate}&end_date=${sessionDate}`;
     fetch(url)
       .then((res) => res.json())
@@ -784,11 +795,12 @@ export default function TennisPairingApp() {
         const hi = data && data.daily && data.daily.temperature_2m_max ? data.daily.temperature_2m_max[0] : null;
         const lo = data && data.daily && data.daily.temperature_2m_min ? data.daily.temperature_2m_min[0] : null;
         const uv = data && data.daily && data.daily.uv_index_max ? data.daily.uv_index_max[0] : null;
+        const code = data && data.daily && data.daily.weather_code ? data.daily.weather_code[0] : null;
         if (hi == null && lo == null) {
           setWeatherStatus('unavailable'); // date outside the forecast window (too far out)
           setWeather(null);
         } else {
-          setWeather({ hi, lo, uv });
+          setWeather({ hi, lo, uv, code });
           setWeatherStatus('ready');
         }
       })
@@ -820,7 +832,6 @@ export default function TennisPairingApp() {
     const next = {
       playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : playingIds,
       courts: partial.courts !== undefined ? partial.courts : courts,
-      unavailableCourts: partial.unavailableCourts !== undefined ? partial.unavailableCourts : unavailableCourts,
       sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
       sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : sessionTime,
       sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
@@ -829,7 +840,6 @@ export default function TennisPairingApp() {
     };
     if (incomingPlayingIds !== undefined) setPlayingIds(incomingPlayingIds);
     if (partial.courts !== undefined) setCourts(partial.courts);
-    if (partial.unavailableCourts !== undefined) setUnavailableCourts(partial.unavailableCourts);
     if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
     if (partial.sessionTime !== undefined) setSessionTime(partial.sessionTime);
     if (partial.sessionDuration !== undefined) setSessionDuration(partial.sessionDuration);
@@ -1001,7 +1011,7 @@ export default function TennisPairingApp() {
   }
 
   function handleStartNewWeek() {
-    persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), sessionTime: '', sessionDuration: '', unavailableCourts: [] });
+    persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), sessionTime: '', sessionDuration: '' });
     setMatchResults(null);
     setNamesText('');
     setLastBulkMatchedIds([]);
@@ -1044,7 +1054,7 @@ export default function TennisPairingApp() {
   function nextAvailableCourtNumber(existingCourts) {
     const used = new Set(existingCourts.map((c) => c.courtNumber));
     let next = 1;
-    while ((used.has(next) || unavailableCourts.includes(next)) && next <= 6) next += 1;
+    while (used.has(next) && next <= 6) next += 1;
     return next <= 6 ? next : null;
   }
   function addCourt() {
@@ -1064,10 +1074,6 @@ export default function TennisPairingApp() {
   }
   function setCourtFormat(id, format) {
     persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, format } : c)) });
-  }
-  function toggleCourtUnavailable(n) {
-    const next = unavailableCourts.includes(n) ? unavailableCourts.filter((x) => x !== n) : [...unavailableCourts, n];
-    persistWeekly({ unavailableCourts: next });
   }
   function setRoundsCount(n) {
     persistWeekly({ rounds: Math.max(1, n) });
@@ -1273,11 +1279,11 @@ export default function TennisPairingApp() {
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
 
   const playingCount = playingIds.length;
-  const assignedCourts = computeCourtAssignments(courts, unavailableCourts);
+  const assignedCourts = computeCourtAssignments(courts);
   const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
   const idealCourtCount = Math.floor(playingCount / 4);
   const usedNumbers = new Set(assignedCourts.map((c) => c.courtNumber).filter((n) => n !== null));
-  const remainingSlots = [1, 2, 3, 4, 5, 6].filter((n) => !usedNumbers.has(n) && !unavailableCourts.includes(n)).length;
+  const remainingSlots = [1, 2, 3, 4, 5, 6].filter((n) => !usedNumbers.has(n)).length;
   const suggestedExtraCourts = Math.min(Math.max(0, idealCourtCount - courts.length), remainingSlots);
   const canFillAtLeastOneCourt = courts.some((c) => playingCount >= (c.format === 'Singles' ? 2 : 4));
   const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
@@ -1424,12 +1430,23 @@ export default function TennisPairingApp() {
                 {weatherStatus === 'loading' && (
                   <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>Checking weather…</div>
                 )}
-                {weatherStatus === 'ready' && weather && (
-                  <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
-                    Half Moon Bay forecast: {Math.round(weather.hi)}°F / {Math.round(weather.lo)}°F
-                    {weather.uv != null && ` · Sun exposure: ${uvCategory(weather.uv)} (UV ${Math.round(weather.uv)})`}
-                  </div>
-                )}
+                {weatherStatus === 'ready' && weather && (() => {
+                  const wd = weatherDisplay(weather.code);
+                  return (
+                    <div className="flex items-center gap-2 mt-2 px-2 py-1.5 rounded-lg" style={{ background: `${wd.color}14` }}>
+                      <span style={{ fontSize: '1.5rem', lineHeight: 1 }}>{wd.icon}</span>
+                      <div className="text-xs">
+                        <span className="font-semibold" style={{ color: wd.color }}>
+                          {wd.label ? `${wd.label}, ` : ''}{Math.round(weather.hi)}°F / {Math.round(weather.lo)}°F
+                        </span>
+                        {weather.uv != null && (
+                          <span style={{ color: 'var(--muted)' }}> · Sun exposure: {uvCategory(weather.uv)} (UV {Math.round(weather.uv)})</span>
+                        )}
+                        <span style={{ color: 'var(--muted)' }}> · Half Moon Bay</span>
+                      </div>
+                    </div>
+                  );
+                })()}
                 {weatherStatus === 'unavailable' && (
                   <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>Forecast isn't available this far out yet — check back closer to the date.</div>
                 )}
@@ -2018,33 +2035,6 @@ export default function TennisPairingApp() {
           {tab === 'courts' && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
               <div>
-                <div className="text-sm font-semibold mb-1">Courts unavailable {formatSessionDateTime(sessionDate, sessionTime, sessionDuration)}</div>
-                <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  Tap any that are off-limits that day — pro coaching, USTA matches, etc. They'll be grayed out below so you can't pick them by accident.
-                </div>
-                <div className="flex gap-2">
-                  {[1, 2, 3, 4, 5, 6].map((n) => {
-                    const off = unavailableCourts.includes(n);
-                    return (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => toggleCourtUnavailable(n)}
-                        className="tp-focus flex-1 py-2 text-sm font-semibold rounded-lg border"
-                        style={{
-                          borderColor: off ? 'var(--clay)' : 'var(--line)',
-                          background: off ? 'var(--clay-tint)' : '#fff',
-                          color: off ? 'var(--clay)' : 'var(--ink)',
-                          textDecoration: off ? 'line-through' : 'none',
-                        }}
-                      >
-                        {n}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
                   Court numbers are assigned automatically — 1 through 4 first, 5 and 6 only if needed and available. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
@@ -2201,9 +2191,7 @@ export default function TennisPairingApp() {
                                 style={{ color: courtClash ? 'var(--warn)' : 'var(--court)' }}
                               >
                                 {[1, 2, 3, 4, 5, 6].map((n) => (
-                                  <option key={n} value={n} disabled={unavailableCourts.includes(n)}>
-                                    {n}{unavailableCourts.includes(n) ? ' (unavailable)' : ''}
-                                  </option>
+                                  <option key={n} value={n}>{n}</option>
                                 ))}
                               </select>
                               <span className="text-xs font-semibold tracking-wide" style={{ color: 'var(--muted)' }}>· {m.format.toUpperCase()}</span>
