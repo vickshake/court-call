@@ -1054,6 +1054,7 @@ export default function TennisPairingApp() {
   async function handleRefresh() {
     setSyncing(true);
     await loadAll();
+    setTodaySearch('');
     setSyncing(false);
   }
 
@@ -1192,12 +1193,14 @@ export default function TennisPairingApp() {
   function togglePlaying(id) {
     const next = playingIds.includes(id) ? playingIds.filter((pid) => pid !== id) : [...playingIds, id];
     persistWeekly({ playingIds: next });
+    setTodaySearch('');
   }
 
   function handleStartNewWeek() {
     persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), sessionTime: '', sessionDuration: '' });
     setMatchResults(null);
     setNamesText('');
+    setTodaySearch('');
     setLastBulkMatchedIds([]);
     setConfirmingReset(false);
     setTab('today');
