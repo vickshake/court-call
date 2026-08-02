@@ -301,34 +301,29 @@ function computeCourtAssignments(courtsList, blockedNumbers, preferredNumbers) {
 function applyCourtPreferences(matches, playerMap) {
   const arranged = matches.map((m) => ({ ...m }));
 
-  function preferenceHolder(match, strength) {
+  function preferenceHolder(match) {
     if (!match) return null;
     const all = [...match.teamA, ...match.teamB].map((id) => playerMap[id]);
-    return all.find((p) => p.preferredCourt && p.courtPreferenceStrength === strength) || null;
+    return all.find((p) => p.preferredCourt) || null;
   }
 
   function findByCourtNumber(courtNumber) {
     return arranged.findIndex((m) => m.courtNumber === courtNumber);
   }
 
-  function applyPass(strength) {
-    arranged.forEach((match) => {
-      const holder = preferenceHolder(match, strength);
-      if (!holder) return;
-      if (match.courtNumber === holder.preferredCourt) return; // already there
-      const targetIdx = findByCourtNumber(holder.preferredCourt);
-      if (targetIdx === -1) return; // that court number isn't in play this round
-      const occupant = arranged[targetIdx];
-      const occupantFirmHolder = preferenceHolder(occupant, 'firm');
-      if (occupantFirmHolder && strength !== 'firm') return; // never bump a satisfied firm preference for a soft one
-      const myNumber = match.courtNumber;
-      match.courtNumber = occupant.courtNumber;
-      occupant.courtNumber = myNumber;
-    });
-  }
+  arranged.forEach((match) => {
+    const holder = preferenceHolder(match);
+    if (!holder) return;
+    if (match.courtNumber === holder.preferredCourt) return; // already there
+    const targetIdx = findByCourtNumber(holder.preferredCourt);
+    if (targetIdx === -1) return; // that court number isn't in play this round
+    const occupant = arranged[targetIdx];
+    if (preferenceHolder(occupant)) return; // don't bump someone else's own preference to satisfy this one
+    const myNumber = match.courtNumber;
+    match.courtNumber = occupant.courtNumber;
+    occupant.courtNumber = myNumber;
+  });
 
-  applyPass('firm');
-  applyPass('soft');
   return arranged;
 }
 
@@ -454,7 +449,6 @@ const HEADER_MAP = {
   commentssuggestions: 'comments', comments: 'comments',
   availability: 'active', activemember: 'active',
   preferredcourt: 'preferredCourt', courtpreference: 'preferredCourt',
-  courtpreferencestrength: 'courtPreferenceStrength',
 };
 
 function rowsToDirectory(rows, referenceYear) {
@@ -493,8 +487,6 @@ function rowsToDirectory(rows, referenceYear) {
       const cta = out.cta != null && out.cta !== '' ? Number(out.cta) : (usta != null ? usta : 3.5);
 
       const preferredCourt = out.preferredCourt != null && out.preferredCourt !== '' ? Number(out.preferredCourt) : null;
-      const strengthRaw = out.courtPreferenceStrength != null ? String(out.courtPreferenceStrength).trim().toLowerCase() : '';
-      const courtPreferenceStrength = preferredCourt ? (strengthRaw === 'firm' ? 'firm' : 'soft') : null;
 
       return {
         id: uid(),
@@ -510,7 +502,6 @@ function rowsToDirectory(rows, referenceYear) {
         comments: out.comments != null ? String(out.comments).trim() : '',
         active,
         preferredCourt,
-        courtPreferenceStrength,
       };
     });
 }
@@ -543,7 +534,6 @@ function directoryToRows(directory, asOfYear) {
     'Comments/suggestions': p.comments,
     'Active Member': p.active ? 'y' : 'n',
     'Preferred Court': p.preferredCourt,
-    'Court Preference Strength': p.courtPreferenceStrength,
   }));
 }
 
@@ -810,7 +800,7 @@ function extractNamesFromPaste(rawText) {
 const BLANK_FORM = {
   name: '', sex: 'M', usta: '', cta: '3.5', handedness: 'R',
   competitive: '3', serving: '', injuries: '', comments: '',
-  preferredCourt: '', courtPreferenceStrength: 'soft', birthYear: '',
+  preferredCourt: '', birthYear: '',
 };
 
 export default function TennisPairingApp() {
@@ -1065,7 +1055,6 @@ export default function TennisPairingApp() {
       comments: f.comments.trim(),
       active: f.active !== undefined ? f.active : true,
       preferredCourt: f.preferredCourt === '' || f.preferredCourt == null ? null : Number(f.preferredCourt),
-      courtPreferenceStrength: f.preferredCourt ? (f.courtPreferenceStrength || 'soft') : null,
     };
   }
 
@@ -1087,7 +1076,6 @@ export default function TennisPairingApp() {
       serving: p.serving === null ? '' : String(p.serving), injuries: p.injuries || '',
       comments: p.comments || '', birthYear: p.birthYear == null ? '' : String(p.birthYear), active: p.active,
       preferredCourt: p.preferredCourt == null ? '' : String(p.preferredCourt),
-      courtPreferenceStrength: p.courtPreferenceStrength || 'soft',
     });
   }
 
@@ -1472,15 +1460,15 @@ export default function TennisPairingApp() {
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
 
   const playingCount = playingIds.length;
-  const firmPreferredCourtNumbers = directory
-    .filter((p) => playingIds.includes(p.id) && p.courtPreferenceStrength === 'firm' && p.preferredCourt)
+  const preferredCourtNumbers = directory
+    .filter((p) => playingIds.includes(p.id) && p.preferredCourt)
     .map((p) => p.preferredCourt);
   const sessionStartMinutes = sessionTime ? (() => { const [h, m] = sessionTime.split(':').map(Number); return h * 60 + m; })() : null;
   const sessionEndMinutes = sessionStartMinutes !== null && sessionDuration ? sessionStartMinutes + Number(sessionDuration) : null;
   const blockedCourtNumbers = sessionStartMinutes !== null && sessionEndMinutes !== null
     ? computeBookedCourts(calendarEvents, sessionDate, sessionStartMinutes, sessionEndMinutes)
     : new Set();
-  const assignedCourts = computeCourtAssignments(courts, blockedCourtNumbers, firmPreferredCourtNumbers);
+  const assignedCourts = computeCourtAssignments(courts, blockedCourtNumbers, preferredCourtNumbers);
   const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
   const canFillAtLeastOneCourt = courts.some((c) => playingCount >= (c.format === 'Singles' ? 2 : 4));
   const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
@@ -1894,28 +1882,12 @@ export default function TennisPairingApp() {
                       </div>
                       <input value={form.injuries} onChange={(e) => setForm({ ...form, injuries: e.target.value })} placeholder="Injuries (optional)" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                       <input value={form.comments} onChange={(e) => setForm({ ...form, comments: e.target.value })} placeholder="Comments/suggestions (optional)" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
-                      <div className="flex gap-2">
-                        <div className="flex-1">
-                          <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Preferred court</label>
-                          <select value={form.preferredCourt} onChange={(e) => setForm({ ...form, preferredCourt: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
-                            <option value="">No preference</option>
-                            {[1, 2, 3, 4, 5, 6].map((v) => <option key={v} value={v}>Court {v}</option>)}
-                          </select>
-                        </div>
-                        {form.preferredCourt !== '' && (
-                          <div className="flex-1">
-                            <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>How firm?</label>
-                            <div className="tp-input flex overflow-hidden">
-                              {['soft', 'firm'].map((s) => (
-                                <button key={s} type="button" onClick={() => setForm({ ...form, courtPreferenceStrength: s })}
-                                  className="flex-1 px-3 py-2 text-sm font-semibold capitalize"
-                                  style={{ background: form.courtPreferenceStrength === s ? 'var(--court-tint)' : 'transparent', color: form.courtPreferenceStrength === s ? 'var(--court)' : 'var(--muted)' }}>
-                                  {s}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                      <div>
+                        <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Preferred court</label>
+                        <select value={form.preferredCourt} onChange={(e) => setForm({ ...form, preferredCourt: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
+                          <option value="">No preference</option>
+                          {[1, 2, 3, 4, 5, 6].map((v) => <option key={v} value={v}>Court {v}</option>)}
+                        </select>
                       </div>
                     </div>
                   )}
@@ -2164,23 +2136,10 @@ export default function TennisPairingApp() {
                         </div>
                         <input value={editForm.injuries} onChange={(e) => setEditForm({ ...editForm, injuries: e.target.value })} placeholder="Injuries" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                         <input value={editForm.comments} onChange={(e) => setEditForm({ ...editForm, comments: e.target.value })} placeholder="Comments/suggestions" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
-                        <div className="flex gap-2">
-                          <select value={editForm.preferredCourt} onChange={(e) => setEditForm({ ...editForm, preferredCourt: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white">
-                            <option value="">No court preference</option>
-                            {[1, 2, 3, 4, 5, 6].map((v) => <option key={v} value={v}>Court {v}</option>)}
-                          </select>
-                          {editForm.preferredCourt !== '' && (
-                            <div className="tp-input flex overflow-hidden flex-1">
-                              {['soft', 'firm'].map((s) => (
-                                <button key={s} type="button" onClick={() => setEditForm({ ...editForm, courtPreferenceStrength: s })}
-                                  className="flex-1 px-3 py-2 text-sm font-semibold capitalize"
-                                  style={{ background: editForm.courtPreferenceStrength === s ? 'var(--court-tint)' : 'transparent', color: editForm.courtPreferenceStrength === s ? 'var(--court)' : 'var(--muted)' }}>
-                                  {s}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                        <select value={editForm.preferredCourt} onChange={(e) => setEditForm({ ...editForm, preferredCourt: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
+                          <option value="">No court preference</option>
+                          {[1, 2, 3, 4, 5, 6].map((v) => <option key={v} value={v}>Court {v}</option>)}
+                        </select>
                         <div className="flex gap-2">
                           <button type="button" onClick={saveEdit} className="tp-btn-primary tp-focus flex-1 py-2 text-sm flex items-center justify-center gap-1"><Check size={14} />Save</button>
                           <button type="button" onClick={() => setEditingId(null)} className="tp-focus px-4 py-2 text-sm" style={{ color: 'var(--muted)' }}>Cancel</button>
@@ -2207,8 +2166,8 @@ export default function TennisPairingApp() {
                           {p.serving != null && <span>Serve {p.serving}/5</span>}
                           {p.birthYear != null && <span>Age {THIS_YEAR - p.birthYear}</span>}
                           {p.preferredCourt != null && (
-                            <span style={{ color: p.courtPreferenceStrength === 'firm' ? 'var(--clay)' : 'var(--muted)' }}>
-                              {p.courtPreferenceStrength === 'firm' ? 'Always' : 'Prefers'} Court {p.preferredCourt}
+                            <span style={{ color: 'var(--clay)' }}>
+                              Always Court {p.preferredCourt}
                             </span>
                           )}
                           <button type="button" onClick={() => toggleActive(p.id)} className="underline">
