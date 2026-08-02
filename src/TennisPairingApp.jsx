@@ -2286,7 +2286,7 @@ export default function TennisPairingApp() {
                           style={{ color: clash || !c.courtNumber ? 'var(--warn)' : 'var(--court)', width: '4.5rem' }}
                           aria-label={`Court number for row ${i + 1}`}
                         >
-                          <option value="">Auto ({c.courtNumber || '—'})</option>
+                          <option value="">{c.courtNumber || '—'}</option>
                           {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
                         </select>
                         <div className="flex-1 text-sm font-medium">{c.format}</div>
