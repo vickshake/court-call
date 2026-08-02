@@ -486,7 +486,15 @@ function rowsToDirectory(rows, referenceYear) {
       const usta = out.usta != null && out.usta !== '' ? Number(out.usta) : null;
       const cta = out.cta != null && out.cta !== '' ? Number(out.cta) : (usta != null ? usta : 3.5);
 
-      const preferredCourt = out.preferredCourt != null && out.preferredCourt !== '' ? Number(out.preferredCourt) : null;
+      // Forgiving of whatever got typed in the cell - "2", "Court 2", "court2" all mean
+      // the same thing. Pulls the first number found and validates it's a real court (1-6).
+      const preferredCourt = (() => {
+        if (out.preferredCourt == null || out.preferredCourt === '') return null;
+        const match = String(out.preferredCourt).match(/\d+/);
+        if (!match) return null;
+        const num = Number(match[0]);
+        return num >= 1 && num <= 6 ? num : null;
+      })();
 
       return {
         id: uid(),
@@ -913,8 +921,10 @@ export default function TennisPairingApp() {
     if (!sessionDate) { setWeatherStatus('idle'); return; }
     let cancelled = false;
     setWeatherStatus('loading');
+    const isToday = sessionDate === todayISO();
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
       + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max,weather_code&temperature_unit=fahrenheit`
+      + (isToday ? '&current=weather_code' : '')
       + `&timezone=America%2FLos_Angeles&start_date=${sessionDate}&end_date=${sessionDate}`;
     fetch(url)
       .then((res) => res.json())
@@ -923,7 +933,14 @@ export default function TennisPairingApp() {
         const hi = data && data.daily && data.daily.temperature_2m_max ? data.daily.temperature_2m_max[0] : null;
         const lo = data && data.daily && data.daily.temperature_2m_min ? data.daily.temperature_2m_min[0] : null;
         const uv = data && data.daily && data.daily.uv_index_max ? data.daily.uv_index_max[0] : null;
-        const code = data && data.daily && data.daily.weather_code ? data.daily.weather_code[0] : null;
+        // "daily" weather_code is documented by Open-Meteo as the MOST SEVERE condition
+        // across the entire day - so a clear afternoon still reports morning coastal
+        // overcast. For today specifically, current.weather_code is the real, right-now
+        // condition instead. A future date has no "current" to fall back on, so it keeps
+        // using the daily summary - the best available answer for a day that hasn't happened yet.
+        const currentCode = data && data.current && data.current.weather_code != null ? data.current.weather_code : null;
+        const dailyCode = data && data.daily && data.daily.weather_code ? data.daily.weather_code[0] : null;
+        const code = isToday && currentCode != null ? currentCode : dailyCode;
         if (hi == null && lo == null) {
           setWeatherStatus('unavailable'); // date outside the forecast window (too far out)
           setWeather(null);
@@ -1494,7 +1511,7 @@ export default function TennisPairingApp() {
         .tp-root {
           --bg: #F6F7F4; --surface: #FFFFFF; --ink: #1C211D; --muted: #6B7268;
           --court: #1E5631; --court-tint: #E7F0E9; --clay: #A8532E; --clay-tint: #F3E4DC;
-          --warn: #9C6B0B; --warn-tint: #F5EBD6; --neutral-fill: #9CA39A;
+          --warn: #9C6B0B; --warn-tint: #F5EBD6; --neutral-fill: #C17F5D;
           --line: #E2E5DF;
           font-family: 'IBM Plex Sans', sans-serif; background: var(--bg); color: var(--ink);
         }
