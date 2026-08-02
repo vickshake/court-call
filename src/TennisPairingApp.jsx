@@ -1472,7 +1472,8 @@ export default function TennisPairingApp() {
   const todayFilter = (list) => list
     .filter((p) => p.name.toLowerCase().includes(todaySearch.toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const playingTodayList = todayFilter(activeDirectory.filter((p) => playingIds.includes(p.id)));
+  const playingTodayAll = activeDirectory.filter((p) => playingIds.includes(p.id));
+  const playingTodayList = todayFilter(playingTodayAll);
   const notPlayingTodayList = todayFilter(activeDirectory.filter((p) => !playingIds.includes(p.id)));
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
 
@@ -1930,7 +1931,12 @@ export default function TennisPairingApp() {
               {directory.length > 0 && (
                 <>
                   <div>
-                    <div className="text-sm font-semibold mb-2">Playing today ({playingTodayList.length})</div>
+                    <div className="text-sm font-semibold mb-2">Playing today ({playingTodayAll.length})</div>
+                    {todaySearch && playingTodayList.length < playingTodayAll.length && (
+                      <div className="text-xs mb-2 px-3 py-1.5 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                        Search is narrowing this list — {playingTodayAll.length - playingTodayList.length} other{playingTodayAll.length - playingTodayList.length === 1 ? '' : 's'} still marked playing, just hidden. Clear search to see everyone.
+                      </div>
+                    )}
                     {playingTodayList.length === 0 ? (
                       <div className="text-sm py-2" style={{ color: 'var(--muted)' }}>Nobody marked in yet — tap names below.</div>
                     ) : (
