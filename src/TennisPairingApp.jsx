@@ -269,13 +269,20 @@ function idealCourtSetup(n) {
 
 function computeCourtAssignments(courtsList, blockedNumbers) {
   // 1-4 always tried before 5-6, simply because ascending order already puts them first.
-  // Each number handed out at most once, so two slots colliding is structurally impossible -
-  // not just discouraged, actually prevented by construction. Numbers blocked by a real,
-  // overlapping calendar event are skipped the same way.
+  // Numbers blocked by a real, overlapping calendar event are skipped the same way. A slot
+  // with an explicit manual override always gets that number directly - overrides are also
+  // reserved from the auto-assignment pool for other slots, so a manual pick isn't silently
+  // handed to someone else too. (Two overrides pointing at the same number is still possible
+  // and deliberately not prevented here - that's surfaced as a clash warning in the UI instead,
+  // since silently resolving someone's explicit choice would be the wrong call.)
   const blocked = blockedNumbers || new Set();
-  const priority = [1, 2, 3, 4, 5, 6].filter((n) => !blocked.has(n));
+  const overriddenNumbers = new Set(courtsList.filter((c) => c.courtNumberOverride).map((c) => c.courtNumberOverride));
+  const priority = [1, 2, 3, 4, 5, 6].filter((n) => !blocked.has(n) && !overriddenNumbers.has(n));
   const used = new Set();
   return courtsList.map((c) => {
+    if (c.courtNumberOverride) {
+      return { ...c, courtNumber: c.courtNumberOverride };
+    }
     const num = priority.find((n) => !used.has(n));
     if (num !== undefined) used.add(num);
     return { ...c, courtNumber: num !== undefined ? num : null };
@@ -979,8 +986,15 @@ export default function TennisPairingApp() {
     if (incomingPlayingIds !== undefined && partial.courts === undefined) {
       // Court count and format track the player count automatically - 8 playing means
       // exactly 2 courts, not whatever was left over from a previous, different-sized group.
+      // Any manual court-number override is preserved by position where a slot still exists,
+      // so toggling one player doesn't silently discard a deliberate override on another slot.
       const formats = idealCourtSetup(incomingPlayingIds.length);
-      nextCourts = formats.map((format, i) => ({ id: courts[i] ? courts[i].id : uid(), format }));
+      nextCourts = formats.map((format, i) => {
+        const prior = courts[i];
+        const entry = { id: prior ? prior.id : uid(), format };
+        if (prior && prior.courtNumberOverride) entry.courtNumberOverride = prior.courtNumberOverride;
+        return entry;
+      });
     }
     const next = {
       playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : playingIds,
@@ -1206,6 +1220,19 @@ export default function TennisPairingApp() {
 
   function setRoundsCount(n) {
     persistWeekly({ rounds: Math.max(1, n) });
+  }
+
+  function setCourtSlotOverride(courtId, value) {
+    const num = value === '' ? null : Number(value);
+    const next = courts.map((c) => {
+      if (c.id !== courtId) return c;
+      if (num === null) {
+        const { courtNumberOverride, ...rest } = c;
+        return rest;
+      }
+      return { ...c, courtNumberOverride: num };
+    });
+    persistWeekly({ courts: next });
   }
 
   function handleGenerate() {
@@ -2190,15 +2217,6 @@ export default function TennisPairingApp() {
                   Checking the CTA calendar for real court bookings…
                 </div>
               )}
-              {calendarStatus === 'error' && (
-                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
-                  ⚠ Can't check the CTA calendar automatically from here. Court numbers below aren't verified against real bookings —{' '}
-                  <a href="https://www.coastsidetennis.com/court-schedule" target="_blank" rel="noopener noreferrer" className="underline font-semibold" style={{ color: 'var(--warn)' }}>
-                    check the real calendar
-                  </a>{' '}
-                  before you play.
-                </div>
-              )}
               {calendarStatus === 'ready' && !sessionTime && (
                 <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
                   Set a time on Today to check these courts against real CTA calendar bookings.
@@ -2214,24 +2232,33 @@ export default function TennisPairingApp() {
               <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  Court count and format follow how many are marked playing on Today — {playingCount} playing sets up {assignedCourts.length === 0 ? 'no courts yet' : `${assignedCourts.length} court${assignedCourts.length === 1 ? '' : 's'}`} automatically. Court numbers go 1 through 4 first, 5 and 6 only if needed. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
+                  Court count and format follow how many are marked playing on Today — {playingCount} playing sets up {assignedCourts.length === 0 ? 'no courts yet' : `${assignedCourts.length} court${assignedCourts.length === 1 ? '' : 's'}`} automatically. Court numbers default to 1 through 4 first, 5 and 6 only if needed — tap a number below to override it for every set this week. Need a one-off exception for just a single set instead? Use Results › Adjust.
                 </div>
                 <div className="space-y-2">
-                  {assignedCourts.map((c, i) => (
-                    <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
-                      <div
-                        className="tp-display font-bold text-sm flex items-center justify-center rounded-md"
-                        style={{ color: c.courtNumber ? 'var(--court)' : 'var(--warn)', background: 'var(--court-tint)', width: '2.2rem', height: '2.2rem' }}
-                        aria-label={`Auto-assigned court number for row ${i + 1}`}
-                      >
-                        {c.courtNumber || '—'}
+                  {assignedCourts.map((c, i) => {
+                    const clash = assignedCourts.some((other, j) => j !== i && other.courtNumber !== null && other.courtNumber === c.courtNumber);
+                    return (
+                      <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
+                        <select
+                          value={c.courtNumberOverride || ''}
+                          onChange={(e) => setCourtSlotOverride(c.id, e.target.value)}
+                          className="tp-focus tp-input font-bold text-sm bg-white px-1.5 py-1"
+                          style={{ color: clash || !c.courtNumber ? 'var(--warn)' : 'var(--court)', width: '4.5rem' }}
+                          aria-label={`Court number for row ${i + 1}`}
+                        >
+                          <option value="">Auto ({c.courtNumber || '—'})</option>
+                          {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                        <div className="flex-1 text-sm font-medium">{c.format}</div>
+                        {!c.courtNumber && (
+                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ No court number left to assign</div>
+                        )}
+                        {clash && c.courtNumber && (
+                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ Same court number used more than once below</div>
+                        )}
                       </div>
-                      <div className="flex-1 text-sm font-medium">{c.format}</div>
-                      {!c.courtNumber && (
-                        <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ No court number left to assign</div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                   {courts.length === 0 && (
                     <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Mark people playing on Today to set up this week's courts.</div>
                   )}
