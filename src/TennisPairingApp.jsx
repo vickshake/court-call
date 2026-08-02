@@ -767,7 +767,7 @@ function parseNamesText(text) {
   return deduped;
 }
 
-const TIME_SUFFIX_RE = /\s*\d{1,2}:\d{2}\s*[AP]M\.?\s*$/i;
+const TIME_SUFFIX_RE = /\s*(?:\d{1,2}:\d{2}\s*[AP]M\.?|Just now)\s*$/i;
 const YOU_SUFFIX_RE = /\s*\(you\)\s*$/i;
 
 function extractNamesFromPaste(rawText) {
@@ -849,6 +849,9 @@ export default function TennisPairingApp() {
   const [pinError, setPinError] = useState('');
   const [changingPin, setChangingPin] = useState(false);
   const [newPinInput, setNewPinInput] = useState('');
+  const [clearHistoryStep, setClearHistoryStep] = useState('idle'); // idle | pin | confirm
+  const [clearHistoryPinInput, setClearHistoryPinInput] = useState('');
+  const [clearHistoryPinError, setClearHistoryPinError] = useState('');
   const [editingRoundIndex, setEditingRoundIndex] = useState(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [copyStatus, setCopyStatus] = useState('');
@@ -1201,6 +1204,27 @@ export default function TennisPairingApp() {
     } else {
       setPinError('Wrong PIN.');
     }
+  }
+
+  function tryClearHistoryPin() {
+    if (clearHistoryPinInput.trim() === String(directoryPin)) {
+      setClearHistoryStep('confirm');
+      setClearHistoryPinInput('');
+      setClearHistoryPinError('');
+    } else {
+      setClearHistoryPinError('Wrong PIN.');
+    }
+  }
+
+  function confirmClearHistory() {
+    persistHistory([]);
+    setClearHistoryStep('idle');
+  }
+
+  function cancelClearHistory() {
+    setClearHistoryStep('idle');
+    setClearHistoryPinInput('');
+    setClearHistoryPinError('');
   }
 
   async function handleChangePin() {
@@ -2491,6 +2515,48 @@ export default function TennisPairingApp() {
 
           {tab === 'history' && (
             <div className="px-4 sm:px-5 py-4 space-y-6">
+              {clearHistoryStep === 'idle' && (loggedMatches.length > 0 || recordList.length > 0) && (
+                <button
+                  type="button"
+                  onClick={() => setClearHistoryStep('pin')}
+                  className="tp-focus text-xs px-3 py-1.5 rounded-lg border"
+                  style={{ borderColor: 'var(--clay)', color: 'var(--clay)' }}
+                >
+                  Clear history…
+                </button>
+              )}
+              {clearHistoryStep === 'pin' && (
+                <div className="tp-card p-4 space-y-2">
+                  <div className="text-sm font-semibold">Enter PIN to clear history</div>
+                  <div className="text-xs" style={{ color: 'var(--muted)' }}>Same PIN as the Directory — this permanently deletes every logged match and win/loss record.</div>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={clearHistoryPinInput}
+                    onChange={(e) => setClearHistoryPinInput(e.target.value)}
+                    className="tp-focus tp-input w-full px-3 py-2 text-sm"
+                    placeholder="PIN"
+                  />
+                  {clearHistoryPinError && <div className="text-xs" style={{ color: 'var(--clay)' }}>{clearHistoryPinError}</div>}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={tryClearHistoryPin} className="tp-btn-primary tp-focus flex-1 py-2 text-sm">Continue</button>
+                    <button type="button" onClick={cancelClearHistory} className="tp-btn-secondary tp-focus flex-1 py-2 text-sm">Cancel</button>
+                  </div>
+                </div>
+              )}
+              {clearHistoryStep === 'confirm' && (
+                <div className="tp-card p-4 space-y-2" style={{ borderColor: 'var(--clay)' }}>
+                  <div className="text-sm font-semibold" style={{ color: 'var(--clay)' }}>⚠ This can't be undone</div>
+                  <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                    This will permanently delete all {loggedMatches.length} logged match{loggedMatches.length === 1 ? '' : 'es'} and every player's win/loss record. Are you sure?
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={confirmClearHistory} className="tp-focus flex-1 py-2 text-sm font-semibold rounded-lg" style={{ background: 'var(--clay)', color: '#fff' }}>Yes, clear everything</button>
+                    <button type="button" onClick={cancelClearHistory} className="tp-btn-secondary tp-focus flex-1 py-2 text-sm">Cancel</button>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <div className="text-sm font-semibold mb-2">Win / loss record</div>
                 {recordList.length === 0 ? (
