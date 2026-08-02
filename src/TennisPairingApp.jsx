@@ -2164,6 +2164,27 @@ export default function TennisPairingApp() {
 
           {tab === 'courts' && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
+              <div className="tp-card p-4" style={{ borderColor: 'var(--court)', borderWidth: '2px' }}>
+                <div className="flex items-start gap-3">
+                  <span style={{ fontSize: '1.5rem', lineHeight: 1 }}>📅</span>
+                  <div>
+                    <div className="text-sm font-bold" style={{ color: 'var(--court)' }}>Double-check the real CTA calendar</div>
+                    <div className="text-xs mt-1" style={{ color: 'var(--ink)' }}>
+                      Court numbers below are this app's best automatic guess — always confirm against the real calendar before you play, especially for USTA matches or pro lessons.
+                    </div>
+                    <a
+                      href="https://www.coastsidetennis.com/court-schedule"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="tp-focus inline-block mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg"
+                      style={{ background: 'var(--court)', color: '#fff' }}
+                    >
+                      Open the CTA court schedule ↗
+                    </a>
+                  </div>
+                </div>
+              </div>
+
               {calendarStatus === 'loading' && (
                 <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
                   Checking the CTA calendar for real court bookings…
@@ -2171,7 +2192,11 @@ export default function TennisPairingApp() {
               )}
               {calendarStatus === 'error' && (
                 <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
-                  ⚠ Couldn't reach the CTA calendar this session. Court numbers below aren't checked against real bookings — worth confirming manually before you play.
+                  ⚠ Can't check the CTA calendar automatically from here. Court numbers below aren't verified against real bookings —{' '}
+                  <a href="https://www.coastsidetennis.com/court-schedule" target="_blank" rel="noopener noreferrer" className="underline font-semibold" style={{ color: 'var(--warn)' }}>
+                    check the real calendar
+                  </a>{' '}
+                  before you play.
                 </div>
               )}
               {calendarStatus === 'ready' && !sessionTime && (
