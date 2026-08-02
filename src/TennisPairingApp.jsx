@@ -152,11 +152,128 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
   return bestRound;
 }
 
-function computeCourtAssignments(courtsList) {
+// Parses court numbers out of a CTA calendar event title. Confirmed format from real
+// examples: "Ct 6 - JC Lssn - OMat" (single court), "Cts 1-2: CTA Tennis" (hyphen range),
+// "Cts 1,2,3 : USTA 8.0 MX" (comma list). Returns [] if the title doesn't match at all,
+// so an unrecognized event safely blocks nothing rather than guessing.
+function parseCourtsFromEventTitle(title) {
+  if (!title) return [];
+  const match = title.match(/^Cts?\s*([\d,\-\s]+)[:\-]/i);
+  if (!match) return [];
+  const body = match[1].trim();
+  if (body.includes('-')) {
+    const [a, b] = body.split('-').map((s) => parseInt(s.trim(), 10));
+    if (Number.isNaN(a) || Number.isNaN(b)) return [];
+    const nums = [];
+    for (let n = a; n <= b; n++) nums.push(n);
+    return nums;
+  }
+  if (body.includes(',')) {
+    return body.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+  }
+  const single = parseInt(body, 10);
+  return Number.isNaN(single) ? [] : [single];
+}
+
+function doTimesOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+// Given calendar events (each {date: 'YYYY-MM-DD', startMinutes, endMinutes, title}) and a
+// requested session window, returns which of courts 1-6 are blocked by a real overlap.
+function computeBookedCourts(events, sessionDate, sessionStartMinutes, sessionEndMinutes) {
+  const blocked = new Set();
+  events.forEach((ev) => {
+    if (ev.date !== sessionDate) return;
+    if (!doTimesOverlap(sessionStartMinutes, sessionEndMinutes, ev.startMinutes, ev.endMinutes)) return;
+    parseCourtsFromEventTitle(ev.title).forEach((n) => blocked.add(n));
+  });
+  return blocked;
+}
+
+// Converts one ICS DTSTART/DTEND value (e.g. "20260802T100000Z" or "20260802T100000") into
+// {date: 'YYYY-MM-DD', minutes} in Half Moon Bay local time, per RFC 5545.
+function icsDateTimeToLocal(dtValue) {
+  const isUTC = dtValue.endsWith('Z');
+  const clean = dtValue.replace('Z', '');
+  const y = clean.slice(0, 4);
+  const mo = clean.slice(4, 6);
+  const d = clean.slice(6, 8);
+  const h = clean.slice(9, 11);
+  const mi = clean.slice(11, 13);
+  if (!isUTC) {
+    // No Z suffix: per RFC 5545 this is either a floating time or paired with a TZID
+    // parameter. For this specific calendar (Half Moon Bay club events), the digits are
+    // already the local wall-clock time, so no conversion is needed or safe to assume.
+    return { date: `${y}-${mo}-${d}`, minutes: Number(h) * 60 + Number(mi) };
+  }
+  // Z suffix: genuinely UTC, needs real conversion to Pacific time. Routed through Intl
+  // rather than a hardcoded offset, since that offset shifts with daylight saving.
+  const dt = new Date(`${y}-${mo}-${d}T${h}:${mi}:00Z`);
+  const localDateStr = dt.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const localTimeStr = dt.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour12: false });
+  const [lh, lm] = localTimeStr.split(':').map(Number);
+  return { date: localDateStr, minutes: lh * 60 + lm };
+}
+
+// Parses a raw ICS (iCalendar) document into {title, date, startMinutes, endMinutes} events.
+// Handles RFC 5545 line folding (continuation lines start with a space) before extracting
+// VEVENT blocks, so a SUMMARY or DTSTART split across physical lines still reads correctly.
+function parseICS(icsText) {
+  if (!icsText) return [];
+  const rawLines = icsText.split(/\r\n|\n|\r/);
+  const lines = [];
+  rawLines.forEach((line) => {
+    if ((line.startsWith(' ') || line.startsWith('\t')) && lines.length > 0) {
+      lines[lines.length - 1] += line.slice(1);
+    } else {
+      lines.push(line);
+    }
+  });
+
+  const events = [];
+  let current = null;
+  lines.forEach((line) => {
+    if (line.startsWith('BEGIN:VEVENT')) {
+      current = { title: '', dtstart: '', dtend: '' };
+    } else if (line.startsWith('END:VEVENT')) {
+      if (current && current.dtstart && current.dtend) {
+        const start = icsDateTimeToLocal(current.dtstart);
+        const end = icsDateTimeToLocal(current.dtend);
+        events.push({ title: current.title, date: start.date, startMinutes: start.minutes, endMinutes: end.minutes });
+      }
+      current = null;
+    } else if (current) {
+      if (line.startsWith('SUMMARY')) {
+        current.title = line.slice(line.indexOf(':') + 1).trim();
+      } else if (line.startsWith('DTSTART')) {
+        current.dtstart = line.slice(line.lastIndexOf(':') + 1).trim();
+      } else if (line.startsWith('DTEND')) {
+        current.dtend = line.slice(line.lastIndexOf(':') + 1).trim();
+      }
+    }
+  });
+  return events;
+}
+
+// Given a player count, returns the court setup that uses as many of them as possible:
+// doubles courts first (4 each), with a leftover pair going to a singles court.
+function idealCourtSetup(n) {
+  if (n < 2) return [];
+  const doublesCourts = Math.min(Math.floor(n / 4), 6);
+  const remainder = n - doublesCourts * 4;
+  const setup = Array.from({ length: doublesCourts }, () => 'Mixed Doubles');
+  if (remainder === 2 && setup.length < 6) setup.push('Singles');
+  return setup;
+}
+
+function computeCourtAssignments(courtsList, blockedNumbers) {
   // 1-4 always tried before 5-6, simply because ascending order already puts them first.
   // Each number handed out at most once, so two slots colliding is structurally impossible -
-  // not just discouraged, actually prevented by construction.
-  const priority = [1, 2, 3, 4, 5, 6];
+  // not just discouraged, actually prevented by construction. Numbers blocked by a real,
+  // overlapping calendar event are skipped the same way.
+  const blocked = blockedNumbers || new Set();
+  const priority = [1, 2, 3, 4, 5, 6].filter((n) => !blocked.has(n));
   const used = new Set();
   return courtsList.map((c) => {
     const num = priority.find((n) => !used.has(n));
@@ -694,6 +811,8 @@ export default function TennisPairingApp() {
   const [sessionDuration, setSessionDuration] = useState('');
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState('idle'); // idle | loading | ready | unavailable | error
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [calendarStatus, setCalendarStatus] = useState('idle'); // idle | loading | ready | error
   const [rounds, setRounds] = useState(3);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
@@ -808,6 +927,33 @@ export default function TennisPairingApp() {
     return () => { cancelled = true; };
   }, [sessionDate]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setCalendarStatus('loading');
+    // CTA Court Schedule calendar ID, decoded from the public embed URL on coastsidetennis.com.
+    const CALENDAR_ID = 'p17l7jan7vro6mlh22hialkcng@group.calendar.google.com';
+    const icsUrl = `https://calendar.google.com/calendar/ical/${encodeURIComponent(CALENDAR_ID)}/public/basic.ics`;
+    fetch(icsUrl)
+      .then((res) => {
+        if (!res.ok) throw new Error('calendar fetch failed: ' + res.status);
+        return res.text();
+      })
+      .then((text) => {
+        if (cancelled) return;
+        setCalendarEvents(parseICS(text));
+        setCalendarStatus('ready');
+      })
+      .catch((e) => {
+        // Expected to be the most fragile part of this feature - CORS, the calendar not
+        // truly being public, or the feed format differing are all real possibilities this
+        // sandbox can't rule out ahead of time. Failing here should never break the rest of
+        // the app - it just means court availability isn't calendar-verified this session.
+        console.error('calendar fetch failed', e);
+        if (!cancelled) { setCalendarStatus('error'); setCalendarEvents([]); }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   async function persistDirectory(next) {
     setDirectory(next);
     try {
@@ -829,9 +975,16 @@ export default function TennisPairingApp() {
       capNotice = `Only the first ${MAX_PLAYING} stuck — that's the most this app can pair at once (6 courts × 4).`;
       incomingPlayingIds = incomingPlayingIds.slice(0, MAX_PLAYING);
     }
+    let nextCourts = partial.courts !== undefined ? partial.courts : courts;
+    if (incomingPlayingIds !== undefined && partial.courts === undefined) {
+      // Court count and format track the player count automatically - 8 playing means
+      // exactly 2 courts, not whatever was left over from a previous, different-sized group.
+      const formats = idealCourtSetup(incomingPlayingIds.length);
+      nextCourts = formats.map((format, i) => ({ id: courts[i] ? courts[i].id : uid(), format }));
+    }
     const next = {
       playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : playingIds,
-      courts: partial.courts !== undefined ? partial.courts : courts,
+      courts: nextCourts,
       sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
       sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : sessionTime,
       sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
@@ -839,7 +992,7 @@ export default function TennisPairingApp() {
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
     };
     if (incomingPlayingIds !== undefined) setPlayingIds(incomingPlayingIds);
-    if (partial.courts !== undefined) setCourts(partial.courts);
+    setCourts(nextCourts);
     if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
     if (partial.sessionTime !== undefined) setSessionTime(partial.sessionTime);
     if (partial.sessionDuration !== undefined) setSessionDuration(partial.sessionDuration);
@@ -1051,30 +1204,6 @@ export default function TennisPairingApp() {
     setChangingPin(false);
   }
 
-  function nextAvailableCourtNumber(existingCourts) {
-    const used = new Set(existingCourts.map((c) => c.courtNumber));
-    let next = 1;
-    while (used.has(next) && next <= 6) next += 1;
-    return next <= 6 ? next : null;
-  }
-  function addCourt() {
-    const next = nextAvailableCourtNumber(courts);
-    persistWeekly({ courts: [...courts, { id: uid(), format: 'Doubles', courtNumber: next || courts.length + 1 }] });
-  }
-  function addMultipleCourts(n) {
-    const next = [...courts];
-    for (let i = 0; i < n; i++) {
-      const num = nextAvailableCourtNumber(next);
-      next.push({ id: uid(), format: 'Doubles', courtNumber: num || next.length + 1 });
-    }
-    persistWeekly({ courts: next });
-  }
-  function removeCourt(id) {
-    persistWeekly({ courts: courts.filter((c) => c.id !== id) });
-  }
-  function setCourtFormat(id, format) {
-    persistWeekly({ courts: courts.map((c) => (c.id === id ? { ...c, format } : c)) });
-  }
   function setRoundsCount(n) {
     persistWeekly({ rounds: Math.max(1, n) });
   }
@@ -1279,12 +1408,13 @@ export default function TennisPairingApp() {
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
 
   const playingCount = playingIds.length;
-  const assignedCourts = computeCourtAssignments(courts);
+  const sessionStartMinutes = sessionTime ? (() => { const [h, m] = sessionTime.split(':').map(Number); return h * 60 + m; })() : null;
+  const sessionEndMinutes = sessionStartMinutes !== null && sessionDuration ? sessionStartMinutes + Number(sessionDuration) : null;
+  const blockedCourtNumbers = sessionStartMinutes !== null && sessionEndMinutes !== null
+    ? computeBookedCourts(calendarEvents, sessionDate, sessionStartMinutes, sessionEndMinutes)
+    : new Set();
+  const assignedCourts = computeCourtAssignments(courts, blockedCourtNumbers);
   const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
-  const idealCourtCount = Math.floor(playingCount / 4);
-  const usedNumbers = new Set(assignedCourts.map((c) => c.courtNumber).filter((n) => n !== null));
-  const remainingSlots = [1, 2, 3, 4, 5, 6].filter((n) => !usedNumbers.has(n)).length;
-  const suggestedExtraCourts = Math.min(Math.max(0, idealCourtCount - courts.length), remainingSlots);
   const canFillAtLeastOneCourt = courts.some((c) => playingCount >= (c.format === 'Singles' ? 2 : 4));
   const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
 
@@ -2034,10 +2164,32 @@ export default function TennisPairingApp() {
 
           {tab === 'courts' && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
+              {calendarStatus === 'loading' && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                  Checking the CTA calendar for real court bookings…
+                </div>
+              )}
+              {calendarStatus === 'error' && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
+                  ⚠ Couldn't reach the CTA calendar this session. Court numbers below aren't checked against real bookings — worth confirming manually before you play.
+                </div>
+              )}
+              {calendarStatus === 'ready' && !sessionTime && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                  Set a time on Today to check these courts against real CTA calendar bookings.
+                </div>
+              )}
+              {calendarStatus === 'ready' && sessionTime && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                  {blockedCourtNumbers.size === 0
+                    ? 'Checked against the CTA calendar — no conflicts for this time.'
+                    : `Checked against the CTA calendar — court${blockedCourtNumbers.size === 1 ? '' : 's'} ${Array.from(blockedCourtNumbers).sort().join(', ')} booked during this time, skipped automatically.`}
+                </div>
+              )}
               <div>
                 <div className="text-sm font-semibold mb-2">Courts this week</div>
                 <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  Court numbers are assigned automatically — 1 through 4 first, 5 and 6 only if needed and available. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
+                  Court count and format follow how many are marked playing on Today — {playingCount} playing sets up {assignedCourts.length === 0 ? 'no courts yet' : `${assignedCourts.length} court${assignedCourts.length === 1 ? '' : 's'}`} automatically. Court numbers go 1 through 4 first, 5 and 6 only if needed. Need a one-off exception for just a single set? Change it from Results › Adjust instead.
                 </div>
                 <div className="space-y-2">
                   {assignedCourts.map((c, i) => (
@@ -2049,27 +2201,16 @@ export default function TennisPairingApp() {
                       >
                         {c.courtNumber || '—'}
                       </div>
-                      <select value={c.format} onChange={(e) => setCourtFormat(c.id, e.target.value)} className="tp-focus tp-input flex-1 px-2 py-1.5 text-sm bg-white">
-                        <option>Singles</option>
-                        <option>Doubles</option>
-                        <option>Mixed Doubles</option>
-                      </select>
-                      <button type="button" onClick={() => removeCourt(c.id)} style={{ color: 'var(--muted)' }} aria-label={`Remove court ${i + 1}`}>
-                        <X size={16} />
-                      </button>
+                      <div className="flex-1 text-sm font-medium">{c.format}</div>
                       {!c.courtNumber && (
-                        <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ No court number left to assign — remove a court above or free one up</div>
+                        <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ No court number left to assign</div>
                       )}
                     </div>
                   ))}
                   {courts.length === 0 && (
-                    <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Add a court to set up this week's matches.</div>
+                    <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Mark people playing on Today to set up this week's courts.</div>
                   )}
                 </div>
-                <button type="button" onClick={addCourt} className="tp-focus mt-2 flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border" style={{ borderColor: 'var(--line)', color: 'var(--court)' }}>
-                  <Plus size={14} />
-                  Add court
-                </button>
               </div>
 
               <div className="tp-card p-4">
@@ -2090,24 +2231,9 @@ export default function TennisPairingApp() {
                 {playingCount > neededPerRound ? ' — more than fits at once, so who sits out rotates set to set.' : ''}
               </div>
 
-              {suggestedExtraCourts > 0 && (
-                <div className="tp-card p-3 flex items-center justify-between gap-2" style={{ borderColor: 'var(--court)' }}>
-                  <div className="text-xs" style={{ color: 'var(--court)' }}>
-                    {playingCount} playing — {courts.length} {courts.length === 1 ? 'court fits' : 'courts fit'} {neededPerRound}. Add {suggestedExtraCourts} more to fit everyone at once?
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => addMultipleCourts(suggestedExtraCourts)}
-                    className="tp-btn-primary tp-focus px-3 py-1.5 text-xs shrink-0"
-                  >
-                    Add {suggestedExtraCourts}
-                  </button>
-                </div>
-              )}
-
-              {playingCount >= 2 && courts.length > 0 && !canFillAtLeastOneCourt && (
+              {playingCount >= 1 && courts.length === 0 && (
                 <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
-                  ⚠ {playingCount} playing isn't enough to fill any court as currently set up (Doubles/Mixed need 4, Singles needs 2). Mark more people playing, add a Singles court, or change a court's format.
+                  ⚠ {playingCount} playing isn't enough to fill a court (Doubles/Mixed need 4, Singles needs 2, and a lone leftover of 1 or 3 can't fill anything on its own). Mark more people playing to enable pairing.
                 </div>
               )}
 
