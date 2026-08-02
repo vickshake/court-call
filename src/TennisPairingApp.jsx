@@ -267,7 +267,7 @@ function idealCourtSetup(n) {
   return setup;
 }
 
-function computeCourtAssignments(courtsList, blockedNumbers) {
+function computeCourtAssignments(courtsList, blockedNumbers, preferredNumbers) {
   // 1-4 always tried before 5-6, simply because ascending order already puts them first.
   // Numbers blocked by a real, overlapping calendar event are skipped the same way. A slot
   // with an explicit manual override always gets that number directly - overrides are also
@@ -275,9 +275,18 @@ function computeCourtAssignments(courtsList, blockedNumbers) {
   // handed to someone else too. (Two overrides pointing at the same number is still possible
   // and deliberately not prevented here - that's surfaced as a clash warning in the UI instead,
   // since silently resolving someone's explicit choice would be the wrong call.)
+  //
+  // Firm court preferences (for people actually playing today) are pulled to the front of the
+  // priority order. Without this, a small session - say 4 people, one court needed - would
+  // always number that lone court "1" by strict ascending order, even if the one person
+  // playing has a firm preference for court 2 specifically. There'd be no court 2 in the
+  // session at all for that preference to land on, no matter what applyCourtPreferences does
+  // afterward - the number has to actually be among the assigned courts first.
   const blocked = blockedNumbers || new Set();
   const overriddenNumbers = new Set(courtsList.filter((c) => c.courtNumberOverride).map((c) => c.courtNumberOverride));
-  const priority = [1, 2, 3, 4, 5, 6].filter((n) => !blocked.has(n) && !overriddenNumbers.has(n));
+  const preferred = (preferredNumbers || []).filter((n, i, arr) => arr.indexOf(n) === i);
+  const orderedCandidates = [...preferred, ...[1, 2, 3, 4, 5, 6].filter((n) => !preferred.includes(n))];
+  const priority = orderedCandidates.filter((n) => !blocked.has(n) && !overriddenNumbers.has(n));
   const used = new Set();
   return courtsList.map((c) => {
     if (c.courtNumberOverride) {
@@ -849,7 +858,7 @@ export default function TennisPairingApp() {
   const [pinError, setPinError] = useState('');
   const [changingPin, setChangingPin] = useState(false);
   const [newPinInput, setNewPinInput] = useState('');
-  const [clearHistoryStep, setClearHistoryStep] = useState('idle'); // idle | pin | confirm
+  const [clearHistoryStep, setClearHistoryStep] = useState('idle'); // idle | pin | unlocked | confirm
   const [clearHistoryPinInput, setClearHistoryPinInput] = useState('');
   const [clearHistoryPinError, setClearHistoryPinError] = useState('');
   const [editingRoundIndex, setEditingRoundIndex] = useState(null);
@@ -1208,7 +1217,7 @@ export default function TennisPairingApp() {
 
   function tryClearHistoryPin() {
     if (clearHistoryPinInput.trim() === String(directoryPin)) {
-      setClearHistoryStep('confirm');
+      setClearHistoryStep('unlocked');
       setClearHistoryPinInput('');
       setClearHistoryPinError('');
     } else {
@@ -1225,6 +1234,10 @@ export default function TennisPairingApp() {
     setClearHistoryStep('idle');
     setClearHistoryPinInput('');
     setClearHistoryPinError('');
+  }
+
+  function deleteHistoryEntry(id) {
+    persistHistory(history.filter((h) => h.id !== id));
   }
 
   async function handleChangePin() {
@@ -1459,12 +1472,15 @@ export default function TennisPairingApp() {
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
 
   const playingCount = playingIds.length;
+  const firmPreferredCourtNumbers = directory
+    .filter((p) => playingIds.includes(p.id) && p.courtPreferenceStrength === 'firm' && p.preferredCourt)
+    .map((p) => p.preferredCourt);
   const sessionStartMinutes = sessionTime ? (() => { const [h, m] = sessionTime.split(':').map(Number); return h * 60 + m; })() : null;
   const sessionEndMinutes = sessionStartMinutes !== null && sessionDuration ? sessionStartMinutes + Number(sessionDuration) : null;
   const blockedCourtNumbers = sessionStartMinutes !== null && sessionEndMinutes !== null
     ? computeBookedCourts(calendarEvents, sessionDate, sessionStartMinutes, sessionEndMinutes)
     : new Set();
-  const assignedCourts = computeCourtAssignments(courts, blockedCourtNumbers);
+  const assignedCourts = computeCourtAssignments(courts, blockedCourtNumbers, firmPreferredCourtNumbers);
   const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
   const canFillAtLeastOneCourt = courts.some((c) => playingCount >= (c.format === 'Singles' ? 2 : 4));
   const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
@@ -2522,13 +2538,13 @@ export default function TennisPairingApp() {
                   className="tp-focus text-xs px-3 py-1.5 rounded-lg border"
                   style={{ borderColor: 'var(--clay)', color: 'var(--clay)' }}
                 >
-                  Clear history…
+                  Edit history…
                 </button>
               )}
               {clearHistoryStep === 'pin' && (
                 <div className="tp-card p-4 space-y-2">
-                  <div className="text-sm font-semibold">Enter PIN to clear history</div>
-                  <div className="text-xs" style={{ color: 'var(--muted)' }}>Same PIN as the Directory — this permanently deletes every logged match and win/loss record.</div>
+                  <div className="text-sm font-semibold">Enter PIN to edit history</div>
+                  <div className="text-xs" style={{ color: 'var(--muted)' }}>Same PIN as the Directory — lets you remove individual matches or clear everything at once.</div>
                   <input
                     type="password"
                     inputMode="numeric"
@@ -2544,6 +2560,19 @@ export default function TennisPairingApp() {
                   </div>
                 </div>
               )}
+              {clearHistoryStep === 'unlocked' && (
+                <div className="tp-card p-3 flex items-center justify-between gap-2" style={{ borderColor: 'var(--court)' }}>
+                  <div className="text-xs" style={{ color: 'var(--court)' }}>
+                    Editing unlocked — tap ✕ next to any match below to remove just that one.
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    {loggedMatches.length > 0 && (
+                      <button type="button" onClick={() => setClearHistoryStep('confirm')} className="tp-focus text-xs px-2 py-1 rounded-md" style={{ color: 'var(--clay)' }}>Clear all…</button>
+                    )}
+                    <button type="button" onClick={cancelClearHistory} className="tp-btn-secondary tp-focus text-xs px-2 py-1">Done</button>
+                  </div>
+                </div>
+              )}
               {clearHistoryStep === 'confirm' && (
                 <div className="tp-card p-4 space-y-2" style={{ borderColor: 'var(--clay)' }}>
                   <div className="text-sm font-semibold" style={{ color: 'var(--clay)' }}>⚠ This can't be undone</div>
@@ -2552,7 +2581,7 @@ export default function TennisPairingApp() {
                   </div>
                   <div className="flex gap-2">
                     <button type="button" onClick={confirmClearHistory} className="tp-focus flex-1 py-2 text-sm font-semibold rounded-lg" style={{ background: 'var(--clay)', color: '#fff' }}>Yes, clear everything</button>
-                    <button type="button" onClick={cancelClearHistory} className="tp-btn-secondary tp-focus flex-1 py-2 text-sm">Cancel</button>
+                    <button type="button" onClick={() => setClearHistoryStep('unlocked')} className="tp-btn-secondary tp-focus flex-1 py-2 text-sm">Cancel</button>
                   </div>
                 </div>
               )}
@@ -2580,13 +2609,20 @@ export default function TennisPairingApp() {
                 ) : (
                   <div className="space-y-1.5">
                     {loggedMatches.map((h) => (
-                      <div key={h.id} className="tp-card px-4 py-2.5 text-xs" style={{ color: 'var(--muted)' }}>
-                        <span className="font-semibold" style={{ color: 'var(--ink)' }}>{h.date}</span> · Set {h.setNumber} · Court {h.court} · {h.format}
-                        <div className="mt-0.5">
-                          <span style={{ fontWeight: h.winner === 'A' ? 700 : 400, color: h.winner === 'A' ? 'var(--court)' : 'var(--muted)' }}>{h.teamANames.join(' & ')}</span>
-                          {' vs '}
-                          <span style={{ fontWeight: h.winner === 'B' ? 700 : 400, color: h.winner === 'B' ? 'var(--court)' : 'var(--muted)' }}>{h.teamBNames.join(' & ')}</span>
+                      <div key={h.id} className="tp-card px-4 py-2.5 text-xs flex items-start gap-2" style={{ color: 'var(--muted)' }}>
+                        <div className="flex-1">
+                          <span className="font-semibold" style={{ color: 'var(--ink)' }}>{h.date}</span> · Set {h.setNumber} · Court {h.court} · {h.format}
+                          <div className="mt-0.5">
+                            <span style={{ fontWeight: h.winner === 'A' ? 700 : 400, color: h.winner === 'A' ? 'var(--court)' : 'var(--muted)' }}>{h.teamANames.join(' & ')}</span>
+                            {' vs '}
+                            <span style={{ fontWeight: h.winner === 'B' ? 700 : 400, color: h.winner === 'B' ? 'var(--court)' : 'var(--muted)' }}>{h.teamBNames.join(' & ')}</span>
+                          </div>
                         </div>
+                        {clearHistoryStep === 'unlocked' && (
+                          <button type="button" onClick={() => deleteHistoryEntry(h.id)} className="tp-focus shrink-0" style={{ color: 'var(--clay)' }} aria-label={`Delete match: ${h.date} set ${h.setNumber}`}>
+                            <X size={14} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
