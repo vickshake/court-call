@@ -592,6 +592,32 @@ function isStandalone() {
 }
 const SKILL_OPTIONS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
 const THIS_YEAR = new Date().getFullYear();
+function generateSalt() {
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashPin(pin, salt) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(salt + ':' + pin);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function makePinRecord(pin) {
+  const salt = generateSalt();
+  const hash = await hashPin(pin, salt);
+  return { hash, salt };
+}
+
+async function pinMatches(enteredPin, record) {
+  if (!record || !record.hash || !record.salt) return false;
+  const attemptHash = await hashPin(enteredPin.trim(), record.salt);
+  return attemptHash === record.hash;
+}
+
 function todayISO() {
   const d = new Date();
   const y = d.getFullYear();
@@ -962,11 +988,19 @@ export default function TennisPairingApp() {
     }
 
     // Migration: if no admin registry exists yet, seed one from the old single PIN so
-    // nobody is locked out the first time this loads with the new system.
+    // nobody is locked out the first time this loads with the new system. The legacy PIN
+    // itself was stored in plain text, so it's hashed fresh here rather than carried over as-is.
     if (registryResult.status === 'fulfilled' && registryResult.value && registryResult.value.value) {
       setAdminRegistry(JSON.parse(registryResult.value.value));
     } else {
-      setAdminRegistry({ superuserPin: legacyPin, admins: [] });
+      const migratedRecord = await makePinRecord(legacyPin);
+      const migratedRegistry = { superuserPin: migratedRecord, admins: [] };
+      setAdminRegistry(migratedRegistry);
+      try {
+        await window.storage.set(ADMIN_REGISTRY_KEY, JSON.stringify(migratedRegistry), true);
+      } catch (e) {
+        console.error('registry migration save failed', e);
+      }
     }
 
     if (auditResult.status === 'fulfilled' && auditResult.value && auditResult.value.value) {
@@ -1280,8 +1314,11 @@ export default function TennisPairingApp() {
     setConfirmingUncheck(false);
   }
 
-  function findAdminByPin(pin) {
-    return adminRegistry.admins.find((a) => a.pin === pin.trim()) || null;
+  async function findAdminByPin(pin) {
+    for (const a of adminRegistry.admins) {
+      if (await pinMatches(pin, a.pin)) return a;
+    }
+    return null;
   }
 
   async function persistAdminRegistry(next) {
@@ -1306,15 +1343,15 @@ export default function TennisPairingApp() {
     }
   }
 
-  function tryUnlockDirectory() {
+  async function tryUnlockDirectory() {
     const trimmed = pinInput.trim();
-    const admin = findAdminByPin(trimmed);
+    const admin = await findAdminByPin(trimmed);
     if (admin) {
       setDirectoryUnlocked(true);
       setCurrentAdminName(admin.name);
       setPinInput('');
       setPinError('');
-    } else if (trimmed === String(adminRegistry.superuserPin)) {
+    } else if (await pinMatches(trimmed, adminRegistry.superuserPin)) {
       setDirectoryUnlocked(true);
       setCurrentAdminName('Superuser');
       setPinInput('');
@@ -1324,8 +1361,8 @@ export default function TennisPairingApp() {
     }
   }
 
-  function tryUnlockSuperuser() {
-    if (superuserPinInput.trim() === String(adminRegistry.superuserPin)) {
+  async function tryUnlockSuperuser() {
+    if (await pinMatches(superuserPinInput, adminRegistry.superuserPin)) {
       setSuperuserUnlocked(true);
       setSuperuserPinInput('');
       setSuperuserPinError('');
@@ -1347,17 +1384,20 @@ export default function TennisPairingApp() {
     });
   }
 
-  function addAdmin() {
+  async function addAdmin() {
     if (!newAdminPlayerId || !newAdminPin.trim()) return;
-    if (adminRegistry.admins.some((a) => a.pin === newAdminPin.trim())) {
-      setNewAdminPinError('That PIN is already assigned to another admin.');
-      return;
+    for (const a of adminRegistry.admins) {
+      if (await pinMatches(newAdminPin, a.pin)) {
+        setNewAdminPinError('That PIN is already assigned to another admin.');
+        return;
+      }
     }
     const player = directory.find((p) => p.id === newAdminPlayerId);
     if (!player) return;
+    const pinRecord = await makePinRecord(newAdminPin.trim());
     const next = {
       ...adminRegistry,
-      admins: [...adminRegistry.admins, { id: uid(), playerId: player.id, name: player.name, pin: newAdminPin.trim() }],
+      admins: [...adminRegistry.admins, { id: uid(), playerId: player.id, name: player.name, pin: pinRecord }],
     };
     persistAdminRegistry(next);
     logAudit('Superuser', 'admin.grant', `Granted Admin access to ${player.name}`);
@@ -1373,10 +1413,10 @@ export default function TennisPairingApp() {
     if (admin) logAudit('Superuser', 'admin.revoke', `Revoked Admin access from ${admin.name}`);
   }
 
-  function tryClearHistoryPin() {
+  async function tryClearHistoryPin() {
     const trimmed = clearHistoryPinInput.trim();
-    const admin = findAdminByPin(trimmed);
-    if (admin || trimmed === String(adminRegistry.superuserPin)) {
+    const admin = await findAdminByPin(trimmed);
+    if (admin || await pinMatches(trimmed, adminRegistry.superuserPin)) {
       setCurrentAdminName(admin ? admin.name : 'Superuser');
       setClearHistoryStep('unlocked');
       setClearHistoryPinInput('');
@@ -2275,7 +2315,7 @@ export default function TennisPairingApp() {
                   )}
                   {adminRegistry.admins.map((a) => (
                     <div key={a.id} className="tp-card flex items-center justify-between px-4 py-2.5 text-sm">
-                      <span>{a.name} <span style={{ color: 'var(--muted)', fontSize: '11px' }}>· PIN {a.pin}</span></span>
+                      <span>{a.name}</span>
                       <button type="button" onClick={() => revokeAdmin(a.id)} className="tp-focus text-xs" style={{ color: 'var(--clay)' }}>Revoke</button>
                     </div>
                   ))}
@@ -2312,7 +2352,7 @@ export default function TennisPairingApp() {
                   />
                   <button
                     type="button"
-                    onClick={() => { if (newPinInput.trim()) { persistAdminRegistry({ ...adminRegistry, superuserPin: newPinInput.trim() }); setNewPinInput(''); } }}
+                    onClick={async () => { if (newPinInput.trim()) { const rec = await makePinRecord(newPinInput.trim()); persistAdminRegistry({ ...adminRegistry, superuserPin: rec }); setNewPinInput(''); } }}
                     className="tp-btn-secondary tp-focus px-4 py-2 text-sm"
                   >
                     Update
