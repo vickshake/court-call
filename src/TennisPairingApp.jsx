@@ -2130,10 +2130,7 @@ export default function TennisPairingApp() {
           {tab === 'directory' && !directoryUnlocked && !showSuperuserGate && !superuserUnlocked && (
             <div className="px-4 sm:px-5 py-10 flex flex-col items-center text-center gap-3">
               <Lock size={22} style={{ color: 'var(--muted)' }} />
-              <div className="text-sm font-semibold">This is the full member directory</div>
-              <div className="text-xs max-w-xs" style={{ color: 'var(--muted)' }}>
-                Meant for whoever helps manage the club, not everyone marking themselves in. Enter the PIN to continue.
-              </div>
+              <div className="text-sm font-semibold">Enter PIN</div>
               <input
                 value={pinInput}
                 onChange={(e) => { setPinInput(e.target.value); setPinError(''); }}
