@@ -671,16 +671,6 @@ function PlayerToggleRow({ p, playing, onToggle }) {
   );
 }
 
-function formatBuildTime(iso) {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  } catch (e) {
-    return '';
-  }
-}
-
 function normalizeName(s) {
   return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -859,6 +849,11 @@ export default function TennisPairingApp() {
   const [clearHistoryStep, setClearHistoryStep] = useState('idle'); // idle | pin | unlocked | confirm
   const [clearHistoryPinInput, setClearHistoryPinInput] = useState('');
   const [clearHistoryPinError, setClearHistoryPinError] = useState('');
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackEmail, setFeedbackEmail] = useState('');
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const [feedbackStatus, setFeedbackStatus] = useState('idle'); // idle | sending | sent | error
+  const [searchSuggestOpen, setSearchSuggestOpen] = useState(false);
   const [editingRoundIndex, setEditingRoundIndex] = useState(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [copyStatus, setCopyStatus] = useState('');
@@ -1248,6 +1243,32 @@ export default function TennisPairingApp() {
     persistHistory(history.filter((h) => h.id !== id));
   }
 
+  async function handleSubmitFeedback() {
+    if (!feedbackMessage.trim()) return;
+    setFeedbackStatus('sending');
+    try {
+      const res = await fetch('https://formspree.io/f/xjgnnyyb', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ email: feedbackEmail.trim() || undefined, message: feedbackMessage.trim() }),
+      });
+      if (res.ok) {
+        setFeedbackStatus('sent');
+        setFeedbackMessage('');
+        setFeedbackEmail('');
+      } else {
+        setFeedbackStatus('error');
+      }
+    } catch (e) {
+      setFeedbackStatus('error');
+    }
+  }
+
+  function closeFeedback() {
+    setFeedbackOpen(false);
+    setFeedbackStatus('idle');
+  }
+
   async function handleChangePin() {
     const next = newPinInput.trim();
     if (!next) return;
@@ -1479,6 +1500,12 @@ export default function TennisPairingApp() {
   const playingTodayList = todayFilter(playingTodayAll);
   const notPlayingTodayList = todayFilter(activeDirectory.filter((p) => !playingIds.includes(p.id)));
   const inactiveTodayFiltered = todayFilter(inactiveDirectory);
+  const searchSuggestions = todaySearch.trim()
+    ? activeDirectory
+        .filter((p) => p.name.toLowerCase().includes(todaySearch.trim().toLowerCase()))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .slice(0, 5)
+    : [];
 
   const playingCount = playingIds.length;
   const preferredCourtNumbers = directory
@@ -1702,12 +1729,33 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
-              <input
-                value={todaySearch}
-                onChange={(e) => setTodaySearch(e.target.value)}
-                placeholder="Search…"
-                className="tp-focus tp-input w-full px-3 py-2 text-sm"
-              />
+              <div className="relative">
+                <input
+                  value={todaySearch}
+                  onChange={(e) => { setTodaySearch(e.target.value); setSearchSuggestOpen(true); }}
+                  onFocus={() => setSearchSuggestOpen(true)}
+                  onBlur={() => setTimeout(() => setSearchSuggestOpen(false), 150)}
+                  placeholder="Search…"
+                  className="tp-focus tp-input w-full px-3 py-2 text-sm"
+                />
+                {searchSuggestOpen && searchSuggestions.length > 0 && (
+                  <div className="tp-card absolute left-0 right-0 mt-1 py-1 z-10 shadow-lg">
+                    {searchSuggestions.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => { setTodaySearch(p.name); setSearchSuggestOpen(false); }}
+                        className="tp-focus w-full text-left px-3 py-2 text-sm flex items-center justify-between"
+                        style={{ background: 'transparent' }}
+                      >
+                        <span>{p.name}</span>
+                        {playingIds.includes(p.id) && <span className="text-xs" style={{ color: 'var(--court)' }}>Playing</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div className="tp-card p-4 space-y-3">
                 <div className="text-sm font-semibold">Mark several people at once</div>
@@ -2618,7 +2666,56 @@ export default function TennisPairingApp() {
 
           {isStandalone() && (
             <div className="text-center py-4 text-xs" style={{ color: 'var(--muted)', opacity: 0.6 }}>
-              v{typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : '—'} · Built {formatBuildTime(typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '')} · Vick Shaker
+              v{typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : '—'} ·{' '}
+              <button type="button" onClick={() => setFeedbackOpen(true)} className="tp-focus underline" style={{ color: 'inherit' }}>
+                Feedback or questions?
+              </button>
+            </div>
+          )}
+
+          {feedbackOpen && (
+            <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={closeFeedback}>
+              <div className="tp-card w-full max-w-sm p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+                {feedbackStatus === 'sent' ? (
+                  <>
+                    <div className="text-sm font-semibold" style={{ color: 'var(--court)' }}>Thanks — sent!</div>
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}>We'll get back to you if you left an email.</div>
+                    <button type="button" onClick={closeFeedback} className="tp-btn-primary tp-focus w-full py-2 text-sm">Close</button>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-semibold">Feedback or questions?</div>
+                    <input
+                      type="email"
+                      value={feedbackEmail}
+                      onChange={(e) => setFeedbackEmail(e.target.value)}
+                      placeholder="Your email (optional)"
+                      className="tp-focus tp-input w-full px-3 py-2 text-sm"
+                    />
+                    <textarea
+                      value={feedbackMessage}
+                      onChange={(e) => setFeedbackMessage(e.target.value)}
+                      placeholder="What's on your mind…"
+                      rows={4}
+                      className="tp-focus tp-input w-full px-3 py-2 text-sm"
+                    />
+                    {feedbackStatus === 'error' && (
+                      <div className="text-xs" style={{ color: 'var(--clay)' }}>Couldn't send that — check your connection and try again.</div>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSubmitFeedback}
+                        disabled={!feedbackMessage.trim() || feedbackStatus === 'sending'}
+                        className="tp-btn-primary tp-focus flex-1 py-2 text-sm disabled:opacity-50"
+                      >
+                        {feedbackStatus === 'sending' ? 'Sending…' : 'Send'}
+                      </button>
+                      <button type="button" onClick={closeFeedback} className="tp-btn-secondary tp-focus flex-1 py-2 text-sm">Cancel</button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
