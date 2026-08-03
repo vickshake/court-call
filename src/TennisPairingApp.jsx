@@ -37,6 +37,36 @@ function matchImbalance(teamA, teamB, playerMap) {
   return Math.abs(avgSkill(teamA, playerMap) - avgSkill(teamB, playerMap));
 }
 
+// Counts a player's current consecutive win streak, working backward from their most
+// recent logged match. Purely a display stat - never touches ratings or pairing logic.
+function computeWinStreak(playerId, history) {
+  const relevant = history
+    .filter((h) => h.winner && (h.teamA.includes(playerId) || h.teamB.includes(playerId)))
+    .sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return (b.setNumber || 0) - (a.setNumber || 0);
+    });
+  let streak = 0;
+  for (const h of relevant) {
+    const won = (h.teamA.includes(playerId) && h.winner === 'A') || (h.teamB.includes(playerId) && h.winner === 'B');
+    if (won) streak++;
+    else break;
+  }
+  return streak;
+}
+
+// A match counts as an upset when the winning team's average skill was clearly lower
+// than the losing team's - "clearly" meaning at least one full USTA rating tier (0.5).
+function isUpset(match, playerMap, threshold = 0.5) {
+  if (!match.winner) return false;
+  const winners = match.winner === 'A' ? match.teamA : match.teamB;
+  const losers = match.winner === 'A' ? match.teamB : match.teamA;
+  if (!winners.every((id) => playerMap[id]) || !losers.every((id) => playerMap[id])) return false;
+  const winnerAvg = avgSkill(winners, playerMap);
+  const loserAvg = avgSkill(losers, playerMap);
+  return loserAvg - winnerAvg >= threshold;
+}
+
 function competitiveSpread(ids, playerMap) {
   const vals = ids.map((id) => playerMap[id].competitive);
   return Math.max(...vals) - Math.min(...vals);
@@ -563,7 +593,11 @@ function isStandalone() {
 const SKILL_OPTIONS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
 const THIS_YEAR = new Date().getFullYear();
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 function formatSessionDate(iso) {
   if (!iso) return 'today';
@@ -865,6 +899,8 @@ export default function TennisPairingApp() {
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackStatus, setFeedbackStatus] = useState('idle'); // idle | sending | sent | error
   const [searchSuggestOpen, setSearchSuggestOpen] = useState(false);
+  const [celebratingMatchId, setCelebratingMatchId] = useState(null);
+  const [logoTapState, setLogoTapState] = useState({ count: 0, lastTime: 0 });
   const [editingRoundIndex, setEditingRoundIndex] = useState(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [copyStatus, setCopyStatus] = useState('');
@@ -903,7 +939,8 @@ export default function TennisPairingApp() {
       const w = JSON.parse(weeklyResult.value.value);
       setPlayingIds(w.playingIds || []);
       if (w.courts) setCourts(w.courts);
-      setSessionDate(w.sessionDate || todayISO());
+      const loadedDate = w.sessionDate || todayISO();
+      setSessionDate(loadedDate < todayISO() ? todayISO() : loadedDate);
       setSessionTime(w.sessionTime || '');
       setSessionDuration(w.sessionDuration || '');
       if (w.rounds) setRounds(w.rounds);
@@ -1297,6 +1334,19 @@ export default function TennisPairingApp() {
     }
   }
 
+  function handleLogoTap() {
+    const now = Date.now();
+    setLogoTapState((prev) => {
+      const nextCount = now - prev.lastTime < 2000 ? prev.count + 1 : 1;
+      if (nextCount >= 5) {
+        setTab('directory');
+        setShowSuperuserGate(true);
+        return { count: 0, lastTime: now };
+      }
+      return { count: nextCount, lastTime: now };
+    });
+  }
+
   function addAdmin() {
     if (!newAdminPlayerId || !newAdminPin.trim()) return;
     if (adminRegistry.admins.some((a) => a.pin === newAdminPin.trim())) {
@@ -1427,6 +1477,10 @@ export default function TennisPairingApp() {
     };
     const withoutOld = history.filter((h) => h.id !== recordId);
     persistHistory([...withoutOld, entry]);
+    if (winner) {
+      setCelebratingMatchId(recordId);
+      setTimeout(() => setCelebratingMatchId((cur) => (cur === recordId ? null : cur)), 1400);
+    }
   }
 
   function getLoggedWinner(setNumber, court, teamA, teamB) {
@@ -1618,7 +1672,7 @@ export default function TennisPairingApp() {
   const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
 
   const records = {};
-  directory.forEach((p) => { records[p.id] = { wins: 0, losses: 0, name: p.name }; });
+  directory.forEach((p) => { records[p.id] = { id: p.id, wins: 0, losses: 0, name: p.name }; });
   history.forEach((h) => {
     if (!h.winner) return;
     const winners = h.winner === 'A' ? h.teamA : h.teamB;
@@ -1630,6 +1684,8 @@ export default function TennisPairingApp() {
     .filter((r) => r.wins + r.losses > 0)
     .sort((a, b) => a.name.localeCompare(b.name));
   const loggedMatches = [...history].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const winStreaks = {};
+  directory.forEach((p) => { winStreaks[p.id] = computeWinStreak(p.id, history); });
 
   return (
     <div className="tp-root w-full" style={{ minHeight: '100%' }}>
@@ -1665,6 +1721,29 @@ export default function TennisPairingApp() {
         .tp-input { border: 1px solid var(--line); border-radius: 10px; }
         .tp-winbtn { border: 1px solid var(--line); border-radius: 8px; font-weight: 600; }
         .tp-winbtn[data-won="true"] { background: var(--court); color: #fff; border-color: var(--court); }
+        .tp-confetti-piece {
+          position: absolute;
+          width: 7px; height: 7px;
+          border-radius: 1px;
+          animation: tp-confetti-burst 1.1s ease-out forwards;
+          animation-delay: var(--delay);
+          opacity: 0;
+        }
+        @keyframes tp-confetti-burst {
+          0% { transform: translate(-50%, -50%) rotate(0deg); opacity: 1; }
+          100% { transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty))) rotate(var(--rot)); opacity: 0; }
+        }
+        .tp-confetti-pop {
+          position: absolute;
+          font-size: 1.8rem;
+          animation: tp-confetti-pop-anim 1s ease-out forwards;
+        }
+        @keyframes tp-confetti-pop-anim {
+          0% { transform: scale(0.3); opacity: 0; }
+          30% { transform: scale(1.15); opacity: 1; }
+          70% { transform: scale(1); opacity: 1; }
+          100% { transform: scale(1); opacity: 0; }
+        }
       `}</style>
 
       {!loaded ? (
@@ -1684,7 +1763,7 @@ export default function TennisPairingApp() {
           <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b" style={{ borderColor: 'var(--line)' }}>
             <div>
               <div className="flex items-center gap-2">
-                <div className="tp-display text-2xl font-extrabold leading-none">COURT CALL</div>
+                <div className="tp-display text-2xl font-extrabold leading-none" onClick={handleLogoTap}>COURT CALL</div>
                 <span className="text-xs font-semibold px-1.5 py-0.5 rounded" style={{ background: 'var(--court-tint)', color: 'var(--court)', letterSpacing: '0.03em' }}>BETA</span>
               </div>
               <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>Weekly pairing sheet</div>
@@ -2145,9 +2224,6 @@ export default function TennisPairingApp() {
                 <button type="button" onClick={tryUnlockDirectory} className="tp-btn-primary tp-focus px-5 py-2 text-sm">Unlock</button>
                 <button type="button" onClick={() => setTab('today')} className="tp-focus px-4 py-2 text-sm" style={{ color: 'var(--muted)' }}>Back to Today</button>
               </div>
-              <button type="button" onClick={() => setShowSuperuserGate(true)} className="tp-focus text-xs underline mt-2" style={{ color: 'var(--muted)' }}>
-                Superuser
-              </button>
             </div>
           )}
 
@@ -2253,7 +2329,7 @@ export default function TennisPairingApp() {
             </div>
           )}
 
-          {tab === 'directory' && directoryUnlocked && (
+          {tab === 'directory' && directoryUnlocked && !showSuperuserGate && !superuserUnlocked && (
             <div className="px-4 sm:px-5 py-4 space-y-4">
               <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
                 The full member list — names, ratings, and notes. It does not reset week to week; use the Today tab to mark who's playing.
@@ -2588,6 +2664,9 @@ export default function TennisPairingApp() {
                       const total = skillA + skillB || 1;
                       const court = String(m.courtNumber || (mi + 1));
                       const winner = getLoggedWinner(ri + 1, court, m.teamA, m.teamB);
+                      const recordId = `${sessionDate}-set${ri + 1}-court${court}-${matchIdentity(m.teamA, m.teamB)}`;
+                      const isCelebrating = celebratingMatchId === recordId;
+                      const upset = winner ? isUpset({ teamA: m.teamA, teamB: m.teamB, winner }, schedule.playerMap) : false;
                       const notesA = m.teamA.map((id) => schedule.playerMap[id]).filter((pl) => pl.injuries || pl.comments);
                       const notesB = m.teamB.map((id) => schedule.playerMap[id]).filter((pl) => pl.injuries || pl.comments);
                       const editing = editingRoundIndex === ri;
@@ -2607,18 +2686,42 @@ export default function TennisPairingApp() {
                                 color: selectedPlayerId === id ? '#fff' : 'var(--court)',
                               }}
                             >
-                              {schedule.playerMap[id].name}
+                              {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ' 🔥' : ''}
                             </button>
                           ))}
                         </div>
                       ) : (
                         <div className={`font-semibold text-sm ${align === 'right' ? 'text-right' : 'text-left'}`}>
-                          {team.map((id) => schedule.playerMap[id].name).join(' & ')}
+                          {team.map((id) => schedule.playerMap[id].name + (winStreaks[id] >= 3 ? ' 🔥' : '')).join(' & ')}
                         </div>
                       );
                       return (
-                        <div key={mi} className="tp-card p-4">
-                          {editing ? (
+                        <div key={mi} className="tp-card p-4 relative overflow-hidden">
+                          {isCelebrating && (
+                            <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
+                              {Array.from({ length: 16 }).map((_, ci) => (
+                                <span
+                                  key={ci}
+                                  className="tp-confetti-piece"
+                                  style={{
+                                    '--tx': `${(Math.random() - 0.5) * 220}px`,
+                                    '--ty': `${-60 - Math.random() * 120}px`,
+                                    '--rot': `${Math.random() * 720 - 360}deg`,
+                                    '--delay': `${Math.random() * 0.15}s`,
+                                    background: ['var(--court)', 'var(--clay)', '#D4A017'][ci % 3],
+                                    left: '50%',
+                                    top: '50%',
+                                  }}
+                                />
+                              ))}
+                              <span className="tp-confetti-pop">🎉</span>
+                            </div>
+                          )}
+                          {upset && (
+                            <div className="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'var(--clay)', color: '#fff' }}>
+                              Upset!
+                            </div>
+                          )}                          {editing ? (
                             <div className="flex items-center gap-2 mb-2">
                               <span className="text-xs font-semibold tracking-wide" style={{ color: 'var(--muted)' }}>COURT</span>
                               <select
@@ -2813,7 +2916,7 @@ export default function TennisPairingApp() {
                   <div className="space-y-1.5">
                     {recordList.map((r) => (
                       <div key={r.name} className="tp-card flex items-center justify-between px-4 py-2.5 text-sm">
-                        <span className="font-medium">{r.name}</span>
+                        <span className="font-medium">{r.name}{winStreaks[r.id] >= 3 ? ' 🔥' : ''}</span>
                         <span style={{ color: 'var(--muted)' }}>{r.wins}-{r.losses}</span>
                       </div>
                     ))}
