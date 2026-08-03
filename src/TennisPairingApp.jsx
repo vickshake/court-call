@@ -2666,8 +2666,8 @@ export default function TennisPairingApp() {
 
           {isStandalone() && (
             <div className="text-center py-4 text-xs" style={{ color: 'var(--muted)', opacity: 0.6 }}>
-              v{typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : '—'} ·{' '}
-              <button type="button" onClick={() => setFeedbackOpen(true)} className="tp-focus underline" style={{ color: 'inherit' }}>
+              <div>v{typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : '—'} · Design by Vick Shaker</div>
+              <button type="button" onClick={() => setFeedbackOpen(true)} className="tp-focus underline mt-0.5" style={{ color: 'inherit' }}>
                 Feedback or questions?
               </button>
             </div>
