@@ -877,6 +877,7 @@ export default function TennisPairingApp() {
   const [sessionDuration, setSessionDuration] = useState('');
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState('idle'); // idle | loading | ready | unavailable | error
+  const [weatherFetchedAt, setWeatherFetchedAt] = useState(null);
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [calendarStatus, setCalendarStatus] = useState('idle'); // idle | loading | ready | error
   const [rounds, setRounds] = useState(3);
@@ -1015,37 +1016,49 @@ export default function TennisPairingApp() {
   useEffect(() => {
     if (!sessionDate) { setWeatherStatus('idle'); return; }
     let cancelled = false;
-    setWeatherStatus('loading');
     const isToday = sessionDate === todayISO();
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
-      + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max,weather_code&temperature_unit=fahrenheit`
-      + (isToday ? '&current=weather_code' : '')
-      + `&timezone=America%2FLos_Angeles&start_date=${sessionDate}&end_date=${sessionDate}`;
-    fetch(url)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const hi = data && data.daily && data.daily.temperature_2m_max ? data.daily.temperature_2m_max[0] : null;
-        const lo = data && data.daily && data.daily.temperature_2m_min ? data.daily.temperature_2m_min[0] : null;
-        const uv = data && data.daily && data.daily.uv_index_max ? data.daily.uv_index_max[0] : null;
-        // "daily" weather_code is documented by Open-Meteo as the MOST SEVERE condition
-        // across the entire day - so a clear afternoon still reports morning coastal
-        // overcast. For today specifically, current.weather_code is the real, right-now
-        // condition instead. A future date has no "current" to fall back on, so it keeps
-        // using the daily summary - the best available answer for a day that hasn't happened yet.
-        const currentCode = data && data.current && data.current.weather_code != null ? data.current.weather_code : null;
-        const dailyCode = data && data.daily && data.daily.weather_code ? data.daily.weather_code[0] : null;
-        const code = isToday && currentCode != null ? currentCode : dailyCode;
-        if (hi == null && lo == null) {
-          setWeatherStatus('unavailable'); // date outside the forecast window (too far out)
-          setWeather(null);
-        } else {
-          setWeather({ hi, lo, uv, code });
-          setWeatherStatus('ready');
-        }
-      })
-      .catch(() => { if (!cancelled) { setWeatherStatus('error'); setWeather(null); } });
-    return () => { cancelled = true; };
+
+    function fetchWeather() {
+      setWeatherStatus((prev) => (prev === 'ready' ? prev : 'loading')); // don't flash "loading" on background refreshes
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
+        + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max,weather_code&temperature_unit=fahrenheit`
+        + (isToday ? '&current=weather_code' : '')
+        + `&timezone=America%2FLos_Angeles&start_date=${sessionDate}&end_date=${sessionDate}`;
+      fetch(url)
+        .then((res) => res.json())
+        .then((data) => {
+          if (cancelled) return;
+          const hi = data && data.daily && data.daily.temperature_2m_max ? data.daily.temperature_2m_max[0] : null;
+          const lo = data && data.daily && data.daily.temperature_2m_min ? data.daily.temperature_2m_min[0] : null;
+          const uv = data && data.daily && data.daily.uv_index_max ? data.daily.uv_index_max[0] : null;
+          // "daily" weather_code is documented by Open-Meteo as the MOST SEVERE condition
+          // across the entire day - so a clear afternoon still reports morning coastal
+          // overcast. For today specifically, current.weather_code is the real, right-now
+          // condition instead. A future date has no "current" to fall back on, so it keeps
+          // using the daily summary - the best available answer for a day that hasn't happened yet.
+          const currentCode = data && data.current && data.current.weather_code != null ? data.current.weather_code : null;
+          const dailyCode = data && data.daily && data.daily.weather_code ? data.daily.weather_code[0] : null;
+          const code = isToday && currentCode != null ? currentCode : dailyCode;
+          if (hi == null && lo == null) {
+            setWeatherStatus('unavailable'); // date outside the forecast window (too far out)
+            setWeather(null);
+          } else {
+            setWeather({ hi, lo, uv, code });
+            setWeatherStatus('ready');
+            setWeatherFetchedAt(new Date());
+          }
+        })
+        .catch(() => { if (!cancelled) { setWeatherStatus('error'); setWeather(null); } });
+    }
+
+    fetchWeather();
+    // Open-Meteo's underlying regional model for North America (HRRR) updates roughly
+    // every 1-3 hours at the source - refreshing much more often than that wouldn't
+    // actually surface new data, just repeat the same request. 30 minutes catches a new
+    // model run reasonably promptly without polling faster than the data itself changes.
+    // Only today's view benefits from this - a future day's summary isn't a "right now" reading.
+    const intervalId = isToday ? setInterval(fetchWeather, 30 * 60 * 1000) : null;
+    return () => { cancelled = true; if (intervalId) clearInterval(intervalId); };
   }, [sessionDate]);
 
   useEffect(() => {
@@ -1891,6 +1904,11 @@ export default function TennisPairingApp() {
                           <span style={{ color: 'var(--muted)' }}> · Sun exposure: {uvCategory(weather.uv)} (UV {Math.round(weather.uv)})</span>
                         )}
                         <span style={{ color: 'var(--muted)' }}> · Half Moon Bay</span>
+                        {weatherFetchedAt && (
+                          <span style={{ color: 'var(--muted)' }}>
+                            {' '}· updated {weatherFetchedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                          </span>
+                        )}
                       </div>
                     </div>
                   );
