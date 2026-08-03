@@ -2004,13 +2004,16 @@ export default function TennisPairingApp() {
                                 </button>
                               ))}
                             </div>
-                            <select
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="1.0"
+                              max="7.0"
                               value={r.cta}
                               onChange={(e) => updatePendingDraft(i, 'cta', e.target.value)}
                               className="tp-focus tp-input px-1.5 py-1.5 text-xs bg-white shrink-0"
-                            >
-                              {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)}</option>)}
-                            </select>
+                              style={{ width: '4.5rem' }}
+                            />
                             <button type="button" onClick={() => addOnePending(i)} className="tp-input px-2 py-1.5 text-xs shrink-0" style={{ color: 'var(--court)' }}>
                               Add
                             </button>
@@ -2062,9 +2065,15 @@ export default function TennisPairingApp() {
                   </div>
                   <div>
                     <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>CTA rating</label>
-                    <select value={form.cta} onChange={(e) => setForm({ ...form, cta: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
-                      {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)}</option>)}
-                    </select>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="1.0"
+                      max="7.0"
+                      value={form.cta}
+                      onChange={(e) => setForm({ ...form, cta: e.target.value })}
+                      className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white"
+                    />
                   </div>
 
                   {!showMoreFields ? (
@@ -2420,9 +2429,16 @@ export default function TennisPairingApp() {
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <select value={editForm.cta} onChange={(e) => setEditForm({ ...editForm, cta: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white">
-                            {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)} CTA</option>)}
-                          </select>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="1.0"
+                            max="7.0"
+                            value={editForm.cta}
+                            onChange={(e) => setEditForm({ ...editForm, cta: e.target.value })}
+                            placeholder="CTA"
+                            className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white"
+                          />
                           <select value={editForm.usta} onChange={(e) => setEditForm({ ...editForm, usta: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white">
                             <option value="">No USTA</option>
                             {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)} USTA</option>)}
