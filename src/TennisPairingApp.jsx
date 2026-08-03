@@ -551,6 +551,8 @@ const DIRECTORY_KEY = 'player-directory';
 const WEEKLY_KEY = 'weekly-state-v2';
 const HISTORY_KEY = 'match-history';
 const PIN_KEY = 'directory-pin';
+const ADMIN_REGISTRY_KEY = 'admin-registry';
+const AUDIT_LOG_KEY = 'audit-log';
 const DEFAULT_PIN = '1234';
 // Set explicitly by the standalone build's entry point (main.jsx). Inside a Claude artifact
 // this stays false, since that's the only environment where the AI-extraction call below
@@ -842,9 +844,18 @@ export default function TennisPairingApp() {
   const [confirmingUncheck, setConfirmingUncheck] = useState(false);
   const [directoryPin, setDirectoryPin] = useState(DEFAULT_PIN);
   const [directoryUnlocked, setDirectoryUnlocked] = useState(false);
+  const [adminRegistry, setAdminRegistry] = useState({ superuserPin: DEFAULT_PIN, admins: [] });
+  const [auditLog, setAuditLog] = useState([]);
+  const [currentAdminName, setCurrentAdminName] = useState(null); // who unlocked Admin this session
+  const [superuserUnlocked, setSuperuserUnlocked] = useState(false);
+  const [superuserPinInput, setSuperuserPinInput] = useState('');
+  const [superuserPinError, setSuperuserPinError] = useState('');
+  const [showSuperuserGate, setShowSuperuserGate] = useState(false);
+  const [newAdminPlayerId, setNewAdminPlayerId] = useState('');
+  const [newAdminPin, setNewAdminPin] = useState('');
+  const [newAdminPinError, setNewAdminPinError] = useState('');
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
-  const [changingPin, setChangingPin] = useState(false);
   const [newPinInput, setNewPinInput] = useState('');
   const [clearHistoryStep, setClearHistoryStep] = useState('idle'); // idle | pin | unlocked | confirm
   const [clearHistoryPinInput, setClearHistoryPinInput] = useState('');
@@ -873,11 +884,13 @@ export default function TennisPairingApp() {
   }, [copyStatus]);
 
   const loadAll = useCallback(async () => {
-    const [dirResult, weeklyResult, historyResult, pinResult] = await Promise.allSettled([
+    const [dirResult, weeklyResult, historyResult, pinResult, registryResult, auditResult] = await Promise.allSettled([
       window.storage.get(DIRECTORY_KEY, true),
       window.storage.get(WEEKLY_KEY, true),
       window.storage.get(HISTORY_KEY, true),
       window.storage.get(PIN_KEY, true),
+      window.storage.get(ADMIN_REGISTRY_KEY, true),
+      window.storage.get(AUDIT_LOG_KEY, true),
     ]);
 
     if (dirResult.status === 'fulfilled' && dirResult.value && dirResult.value.value) {
@@ -903,10 +916,26 @@ export default function TennisPairingApp() {
       setHistory([]);
     }
 
+    let legacyPin = DEFAULT_PIN;
     if (pinResult.status === 'fulfilled' && pinResult.value && pinResult.value.value) {
+      legacyPin = pinResult.value.value;
       setDirectoryPin(pinResult.value.value);
     } else {
       setDirectoryPin(DEFAULT_PIN);
+    }
+
+    // Migration: if no admin registry exists yet, seed one from the old single PIN so
+    // nobody is locked out the first time this loads with the new system.
+    if (registryResult.status === 'fulfilled' && registryResult.value && registryResult.value.value) {
+      setAdminRegistry(JSON.parse(registryResult.value.value));
+    } else {
+      setAdminRegistry({ superuserPin: legacyPin, admins: [] });
+    }
+
+    if (auditResult.status === 'fulfilled' && auditResult.value && auditResult.value.value) {
+      setAuditLog(JSON.parse(auditResult.value.value));
+    } else {
+      setAuditLog([]);
     }
   }, []);
 
@@ -1094,6 +1123,8 @@ export default function TennisPairingApp() {
 
   function saveEdit() {
     const updated = formToEntry(editForm, editingId);
+    const before = directory.find((p) => p.id === editingId);
+    logAudit(currentAdminName || 'Admin', 'directory.edit', `Edited ${before ? before.name : updated.name}`);
     persistDirectory(directory.map((p) => (p.id === editingId ? updated : p)));
     setEditingId(null);
   }
@@ -1177,10 +1208,14 @@ export default function TennisPairingApp() {
   }
 
   function toggleActive(id) {
+    const p = directory.find((pl) => pl.id === id);
+    logAudit(currentAdminName || 'Admin', 'directory.toggle_active', p ? `${p.active ? 'Deactivated' : 'Activated'} ${p.name}` : `Toggled active for ${id}`);
     persistDirectory(directory.map((p) => (p.id === id ? { ...p, active: !p.active } : p)));
   }
 
   function removeFromDirectory(id) {
+    const p = directory.find((pl) => pl.id === id);
+    logAudit(currentAdminName || 'Admin', 'directory.delete', p ? `Removed ${p.name} from the Directory` : `Removed player ${id}`);
     persistDirectory(directory.filter((p) => p.id !== id));
     persistWeekly({ playingIds: playingIds.filter((pid) => pid !== id) });
   }
@@ -1208,9 +1243,43 @@ export default function TennisPairingApp() {
     setConfirmingUncheck(false);
   }
 
+  function findAdminByPin(pin) {
+    return adminRegistry.admins.find((a) => a.pin === pin.trim()) || null;
+  }
+
+  async function persistAdminRegistry(next) {
+    setAdminRegistry(next);
+    try {
+      await window.storage.set(ADMIN_REGISTRY_KEY, JSON.stringify(next), true);
+      setSaveError('');
+    } catch (e) {
+      console.error('admin registry save failed', e);
+      setSaveError("That didn't save — check your connection and try again.");
+    }
+  }
+
+  async function logAudit(actor, action, detail) {
+    const entry = { id: uid(), timestamp: new Date().toISOString(), actor, action, detail };
+    const next = [entry, ...auditLog].slice(0, 500); // capped so this can't grow unbounded
+    setAuditLog(next);
+    try {
+      await window.storage.set(AUDIT_LOG_KEY, JSON.stringify(next), true);
+    } catch (e) {
+      console.error('audit log save failed', e);
+    }
+  }
+
   function tryUnlockDirectory() {
-    if (pinInput.trim() === String(directoryPin)) {
+    const trimmed = pinInput.trim();
+    const admin = findAdminByPin(trimmed);
+    if (admin) {
       setDirectoryUnlocked(true);
+      setCurrentAdminName(admin.name);
+      setPinInput('');
+      setPinError('');
+    } else if (trimmed === String(adminRegistry.superuserPin)) {
+      setDirectoryUnlocked(true);
+      setCurrentAdminName('Superuser');
       setPinInput('');
       setPinError('');
     } else {
@@ -1218,8 +1287,47 @@ export default function TennisPairingApp() {
     }
   }
 
+  function tryUnlockSuperuser() {
+    if (superuserPinInput.trim() === String(adminRegistry.superuserPin)) {
+      setSuperuserUnlocked(true);
+      setSuperuserPinInput('');
+      setSuperuserPinError('');
+    } else {
+      setSuperuserPinError('Wrong PIN.');
+    }
+  }
+
+  function addAdmin() {
+    if (!newAdminPlayerId || !newAdminPin.trim()) return;
+    if (adminRegistry.admins.some((a) => a.pin === newAdminPin.trim())) {
+      setNewAdminPinError('That PIN is already assigned to another admin.');
+      return;
+    }
+    const player = directory.find((p) => p.id === newAdminPlayerId);
+    if (!player) return;
+    const next = {
+      ...adminRegistry,
+      admins: [...adminRegistry.admins, { id: uid(), playerId: player.id, name: player.name, pin: newAdminPin.trim() }],
+    };
+    persistAdminRegistry(next);
+    logAudit('Superuser', 'admin.grant', `Granted Admin access to ${player.name}`);
+    setNewAdminPlayerId('');
+    setNewAdminPin('');
+    setNewAdminPinError('');
+  }
+
+  function revokeAdmin(adminId) {
+    const admin = adminRegistry.admins.find((a) => a.id === adminId);
+    const next = { ...adminRegistry, admins: adminRegistry.admins.filter((a) => a.id !== adminId) };
+    persistAdminRegistry(next);
+    if (admin) logAudit('Superuser', 'admin.revoke', `Revoked Admin access from ${admin.name}`);
+  }
+
   function tryClearHistoryPin() {
-    if (clearHistoryPinInput.trim() === String(directoryPin)) {
+    const trimmed = clearHistoryPinInput.trim();
+    const admin = findAdminByPin(trimmed);
+    if (admin || trimmed === String(adminRegistry.superuserPin)) {
+      setCurrentAdminName(admin ? admin.name : 'Superuser');
       setClearHistoryStep('unlocked');
       setClearHistoryPinInput('');
       setClearHistoryPinError('');
@@ -1229,6 +1337,7 @@ export default function TennisPairingApp() {
   }
 
   function confirmClearHistory() {
+    logAudit(currentAdminName || 'Admin', 'history.clear_all', `Cleared all ${loggedMatches.length} logged matches`);
     persistHistory([]);
     setClearHistoryStep('idle');
   }
@@ -1240,6 +1349,8 @@ export default function TennisPairingApp() {
   }
 
   function deleteHistoryEntry(id) {
+    const entry = history.find((h) => h.id === id);
+    logAudit(currentAdminName || 'Admin', 'history.delete', entry ? `Deleted match: ${entry.date} Set ${entry.setNumber}` : `Deleted match ${id}`);
     persistHistory(history.filter((h) => h.id !== id));
   }
 
@@ -1267,21 +1378,6 @@ export default function TennisPairingApp() {
   function closeFeedback() {
     setFeedbackOpen(false);
     setFeedbackStatus('idle');
-  }
-
-  async function handleChangePin() {
-    const next = newPinInput.trim();
-    if (!next) return;
-    setDirectoryPin(next);
-    try {
-      await window.storage.set(PIN_KEY, next, true);
-      setSaveError('');
-    } catch (e) {
-      console.error('pin save failed', e);
-      setSaveError("Your new PIN didn't save — check your connection and try again.");
-    }
-    setNewPinInput('');
-    setChangingPin(false);
   }
 
   function setRoundsCount(n) {
@@ -2031,7 +2127,7 @@ export default function TennisPairingApp() {
             </div>
           )}
 
-          {tab === 'directory' && !directoryUnlocked && (
+          {tab === 'directory' && !directoryUnlocked && !showSuperuserGate && !superuserUnlocked && (
             <div className="px-4 sm:px-5 py-10 flex flex-col items-center text-center gap-3">
               <Lock size={22} style={{ color: 'var(--muted)' }} />
               <div className="text-sm font-semibold">This is the full member directory</div>
@@ -2051,6 +2147,111 @@ export default function TennisPairingApp() {
               <div className="flex gap-2">
                 <button type="button" onClick={tryUnlockDirectory} className="tp-btn-primary tp-focus px-5 py-2 text-sm">Unlock</button>
                 <button type="button" onClick={() => setTab('today')} className="tp-focus px-4 py-2 text-sm" style={{ color: 'var(--muted)' }}>Back to Today</button>
+              </div>
+              <button type="button" onClick={() => setShowSuperuserGate(true)} className="tp-focus text-xs underline mt-2" style={{ color: 'var(--muted)' }}>
+                Superuser
+              </button>
+            </div>
+          )}
+
+          {showSuperuserGate && !superuserUnlocked && (
+            <div className="px-4 sm:px-5 py-10 flex flex-col items-center text-center gap-3">
+              <Lock size={22} style={{ color: 'var(--clay)' }} />
+              <div className="text-sm font-semibold">Superuser</div>
+              <div className="text-xs max-w-xs" style={{ color: 'var(--muted)' }}>
+                Manages who has Admin access and reviews the activity log. A different PIN from the regular Admin one.
+              </div>
+              <input
+                value={superuserPinInput}
+                onChange={(e) => { setSuperuserPinInput(e.target.value); setSuperuserPinError(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') tryUnlockSuperuser(); }}
+                placeholder="Superuser PIN"
+                type="password"
+                inputMode="numeric"
+                className="tp-focus tp-input px-3 py-2 text-sm text-center w-40"
+              />
+              {superuserPinError && <div className="text-xs" style={{ color: 'var(--clay)' }}>{superuserPinError}</div>}
+              <div className="flex gap-2">
+                <button type="button" onClick={tryUnlockSuperuser} className="tp-focus px-5 py-2 text-sm font-semibold rounded-lg" style={{ background: 'var(--clay)', color: '#fff' }}>Unlock</button>
+                <button type="button" onClick={() => { setShowSuperuserGate(false); setSuperuserPinInput(''); setSuperuserPinError(''); }} className="tp-focus px-4 py-2 text-sm" style={{ color: 'var(--muted)' }}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {superuserUnlocked && (
+            <div className="px-4 sm:px-5 py-4 space-y-5">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold" style={{ color: 'var(--clay)' }}>Superuser console</div>
+                <button type="button" onClick={() => { setSuperuserUnlocked(false); setShowSuperuserGate(false); }} className="tp-focus text-xs" style={{ color: 'var(--muted)' }}>Exit</button>
+              </div>
+
+              <div>
+                <div className="text-sm font-semibold mb-2">Admins</div>
+                <div className="space-y-1.5">
+                  {adminRegistry.admins.length === 0 && (
+                    <div className="text-xs py-2" style={{ color: 'var(--muted)' }}>No admins granted yet.</div>
+                  )}
+                  {adminRegistry.admins.map((a) => (
+                    <div key={a.id} className="tp-card flex items-center justify-between px-4 py-2.5 text-sm">
+                      <span>{a.name} <span style={{ color: 'var(--muted)', fontSize: '11px' }}>· PIN {a.pin}</span></span>
+                      <button type="button" onClick={() => revokeAdmin(a.id)} className="tp-focus text-xs" style={{ color: 'var(--clay)' }}>Revoke</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="tp-card p-3 mt-2 space-y-2">
+                  <div className="text-xs font-semibold">Grant Admin access</div>
+                  <select value={newAdminPlayerId} onChange={(e) => setNewAdminPlayerId(e.target.value)} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
+                    <option value="">Choose a player…</option>
+                    {directory.filter((p) => !adminRegistry.admins.some((a) => a.playerId === p.id)).map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={newAdminPin}
+                    onChange={(e) => { setNewAdminPin(e.target.value); setNewAdminPinError(''); }}
+                    placeholder="Assign a PIN"
+                    inputMode="numeric"
+                    className="tp-focus tp-input w-full px-3 py-2 text-sm"
+                  />
+                  {newAdminPinError && <div className="text-xs" style={{ color: 'var(--clay)' }}>{newAdminPinError}</div>}
+                  <button type="button" onClick={addAdmin} disabled={!newAdminPlayerId || !newAdminPin.trim()} className="tp-btn-primary tp-focus w-full py-2 text-sm disabled:opacity-50">Grant</button>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-sm font-semibold mb-2">Superuser PIN</div>
+                <div className="flex gap-2">
+                  <input
+                    value={newPinInput}
+                    onChange={(e) => setNewPinInput(e.target.value)}
+                    placeholder="New superuser PIN"
+                    inputMode="numeric"
+                    className="tp-focus tp-input flex-1 px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { if (newPinInput.trim()) { persistAdminRegistry({ ...adminRegistry, superuserPin: newPinInput.trim() }); setNewPinInput(''); } }}
+                    className="tp-btn-secondary tp-focus px-4 py-2 text-sm"
+                  >
+                    Update
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-sm font-semibold mb-2">Activity log</div>
+                {auditLog.length === 0 ? (
+                  <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Nothing logged yet.</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {auditLog.map((entry) => (
+                      <div key={entry.id} className="tp-card px-4 py-2.5 text-xs" style={{ color: 'var(--muted)' }}>
+                        <span className="font-semibold" style={{ color: 'var(--ink)' }}>{entry.actor}</span> · {new Date(entry.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        <div className="mt-0.5">{entry.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -2075,22 +2276,10 @@ export default function TennisPairingApp() {
                   <Download size={14} />
                   Export
                 </button>
-                <button type="button" onClick={() => setChangingPin(!changingPin)} className="tp-focus tp-input flex items-center gap-1.5 text-sm px-3 py-1.5" style={{ color: 'var(--muted)' }}>
-                  <Lock size={14} />
-                  Change PIN
-                </button>
                 <button type="button" onClick={() => setDirectoryUnlocked(false)} className="tp-focus tp-input flex items-center gap-1.5 text-sm px-3 py-1.5" style={{ color: 'var(--muted)' }}>
                   Lock &amp; Exit
                 </button>
               </div>
-
-              {changingPin && (
-                <div className="tp-card p-3 flex items-center gap-2 text-sm">
-                  <input value={newPinInput} onChange={(e) => setNewPinInput(e.target.value)} placeholder="New PIN" className="tp-focus tp-input flex-1 px-3 py-2 text-sm" />
-                  <button type="button" onClick={handleChangePin} className="px-3 py-1.5 rounded-md font-semibold text-sm" style={{ background: 'var(--court)', color: '#fff' }}>Save</button>
-                  <button type="button" onClick={() => setChangingPin(false)} className="text-sm" style={{ color: 'var(--muted)' }}>Cancel</button>
-                </div>
-              )}
 
               <div className="flex items-center gap-2">
                 <label className="text-xs whitespace-nowrap" style={{ color: 'var(--muted)' }}>Ages in file are as of year</label>
