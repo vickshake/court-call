@@ -33,8 +33,23 @@ const COLLECTION = 'court-call-data';
 export const firebaseStorage = {
   async get(key) {
     const ref = doc(db, COLLECTION, key);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) throw new Error('not found');
+    let snap;
+    try {
+      snap = await getDoc(ref);
+    } catch (e) {
+      // getDoc() itself failed - network down, App Check token blocked (e.g. by a
+      // browser privacy shield), permission denied, etc. This is NOT "the document
+      // doesn't exist" - tag it distinctly so the app never confuses "can't reach
+      // Firestore right now" with "this is a genuine first-time setup."
+      const wrapped = new Error(`storage unavailable: ${e && e.message ? e.message : e}`);
+      wrapped.storageErrorType = 'unavailable';
+      throw wrapped;
+    }
+    if (!snap.exists()) {
+      const notFound = new Error('not found');
+      notFound.storageErrorType = 'not-found';
+      throw notFound;
+    }
     return { key, value: snap.data().value, shared: true };
   },
 

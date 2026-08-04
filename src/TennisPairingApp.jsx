@@ -618,6 +618,23 @@ async function pinMatches(enteredPin, record) {
   return attemptHash === record.hash;
 }
 
+// A rejected window.storage.get() can mean two very different things: the key
+// genuinely doesn't exist yet (safe to treat as empty / first-time setup), or the
+// request simply couldn't complete - network down, a browser privacy shield blocking
+// App Check's verification script, permission denied, etc. Treating those two cases
+// identically is exactly what let a connectivity failure look like "no data has ever
+// been saved," silently resetting access to an insecure default. The real,
+// Firestore-backed storage layer (firebaseStorage.js) always tags which case it hit;
+// the claude.ai artifact preview environment doesn't provide this tag at all, so an
+// untagged error there is treated as its one documented failure mode (key not found).
+// An explicit 'unavailable' tag - only ever possible on the real deployment - is never
+// treated as "safe to proceed," regardless of environment.
+function isConfirmedNotFound(rejectionReason) {
+  if (!rejectionReason) return true;
+  if (rejectionReason.storageErrorType === 'unavailable') return false;
+  return true;
+}
+
 function todayISO() {
   const d = new Date();
   const y = d.getFullYear();
@@ -925,6 +942,9 @@ export default function TennisPairingApp() {
   const [directoryPin, setDirectoryPin] = useState(DEFAULT_PIN);
   const [directoryUnlocked, setDirectoryUnlocked] = useState(false);
   const [adminRegistry, setAdminRegistry] = useState({ superuserPin: DEFAULT_PIN, admins: [] });
+  const [registryUnavailable, setRegistryUnavailable] = useState(false); // true when the admin registry couldn't be confirmed either way - blocks all PIN checks until resolved
+  const [directoryLoadError, setDirectoryLoadError] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState(false);
   const [auditLog, setAuditLog] = useState([]);
   const [currentAdminName, setCurrentAdminName] = useState(null); // who unlocked Admin this session
   const [superuserUnlocked, setSuperuserUnlocked] = useState(false);
@@ -977,8 +997,15 @@ export default function TennisPairingApp() {
 
     if (dirResult.status === 'fulfilled' && dirResult.value && dirResult.value.value) {
       setDirectory(JSON.parse(dirResult.value.value));
+      setDirectoryLoadError(false);
+    } else if (dirResult.status === 'rejected' && !isConfirmedNotFound(dirResult.reason)) {
+      // Couldn't confirm whether a real roster exists - leave whatever was already
+      // loaded untouched rather than silently showing "no players," which is exactly
+      // what made a connectivity failure look like data loss.
+      setDirectoryLoadError(true);
     } else {
       setDirectory([]);
+      setDirectoryLoadError(false);
     }
 
     if (weeklyResult.status === 'fulfilled' && weeklyResult.value && weeklyResult.value.value) {
@@ -992,11 +1019,17 @@ export default function TennisPairingApp() {
       if (w.rounds) setRounds(w.rounds);
       setSchedule(w.schedule || null);
     }
+    // No explicit else here, deliberately: on an ambiguous failure this leaves the
+    // in-memory state exactly as it already was, rather than resetting anything.
 
     if (historyResult.status === 'fulfilled' && historyResult.value && historyResult.value.value) {
       setHistory(JSON.parse(historyResult.value.value));
+      setHistoryLoadError(false);
+    } else if (historyResult.status === 'rejected' && !isConfirmedNotFound(historyResult.reason)) {
+      setHistoryLoadError(true);
     } else {
       setHistory([]);
+      setHistoryLoadError(false);
     }
 
     let legacyPin = DEFAULT_PIN;
@@ -1007,15 +1040,26 @@ export default function TennisPairingApp() {
       setDirectoryPin(DEFAULT_PIN);
     }
 
-    // Migration: if no admin registry exists yet, seed one from the old single PIN so
-    // nobody is locked out the first time this loads with the new system. The legacy PIN
-    // itself was stored in plain text, so it's hashed fresh here rather than carried over as-is.
+    // Migration only ever runs when the registry is CONFIRMED not to exist yet - never
+    // on an ambiguous failure that merely looks the same. This is the actual fix for the
+    // incident: a blocked App Check script (or any other connectivity failure) used to
+    // be indistinguishable from "first time this has ever loaded," which silently
+    // rebuilt a fresh registry defaulting to 1234 - bypassing whatever real PIN had
+    // actually been set. Now, any failure that isn't confirmed as "genuinely not found"
+    // blocks all PIN access entirely until the connection is confirmed one way or the other.
     if (registryResult.status === 'fulfilled' && registryResult.value && registryResult.value.value) {
       setAdminRegistry(JSON.parse(registryResult.value.value));
+      setRegistryUnavailable(false);
+    } else if (registryResult.status === 'rejected' && !isConfirmedNotFound(registryResult.reason)) {
+      setRegistryUnavailable(true);
+      // Deliberately do NOT touch adminRegistry here - it stays at its safe initial
+      // value, which cannot successfully match any real PIN (see pinMatches: a plain
+      // default string has no .hash/.salt to compare against).
     } else {
       const migratedRecord = await makePinRecord(legacyPin);
       const migratedRegistry = { superuserPin: migratedRecord, admins: [] };
       setAdminRegistry(migratedRegistry);
+      setRegistryUnavailable(false);
       try {
         await window.storage.set(ADMIN_REGISTRY_KEY, JSON.stringify(migratedRegistry), true);
       } catch (e) {
@@ -1384,6 +1428,10 @@ export default function TennisPairingApp() {
   }
 
   async function tryUnlockDirectory() {
+    if (registryUnavailable) {
+      setPinError("Can't verify access right now — check your connection and try again.");
+      return;
+    }
     const trimmed = pinInput.trim();
     const admin = await findAdminByPin(trimmed);
     if (admin) {
@@ -1402,6 +1450,10 @@ export default function TennisPairingApp() {
   }
 
   async function tryUnlockSuperuser() {
+    if (registryUnavailable) {
+      setSuperuserPinError("Can't verify access right now — check your connection and try again.");
+      return;
+    }
     if (await pinMatches(superuserPinInput, adminRegistry.superuserPin)) {
       setSuperuserUnlocked(true);
       setSuperuserPinInput('');
@@ -1454,6 +1506,10 @@ export default function TennisPairingApp() {
   }
 
   async function tryClearHistoryPin() {
+    if (registryUnavailable) {
+      setClearHistoryPinError("Can't verify access right now — check your connection and try again.");
+      return;
+    }
     const trimmed = clearHistoryPinInput.trim();
     const admin = await findAdminByPin(trimmed);
     if (admin || await pinMatches(trimmed, adminRegistry.superuserPin)) {
@@ -2239,7 +2295,13 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
-              {directory.length === 0 && (
+              {directoryLoadError && (
+                <div className="text-sm text-center py-8 px-4 rounded-lg" style={{ color: 'var(--clay)', background: 'var(--clay-tint)' }}>
+                  <strong>Couldn't load the player directory.</strong> This does not mean your players are gone — it means this device couldn't confirm either way. Check your connection (or an ad/privacy-blocker extension) and refresh before assuming anything's missing.
+                </div>
+              )}
+
+              {!directoryLoadError && directory.length === 0 && (
                 <div className="text-sm text-center py-8" style={{ color: 'var(--muted)' }}>
                   No players in the directory yet. Add someone above, or head to the Directory tab to import a spreadsheet.
                 </div>
@@ -2301,6 +2363,11 @@ export default function TennisPairingApp() {
             <div className="px-4 sm:px-5 py-10 flex flex-col items-center text-center gap-3">
               <Lock size={22} style={{ color: 'var(--muted)' }} />
               <div className="text-sm font-semibold">Enter PIN</div>
+              {registryUnavailable && (
+                <div className="text-xs max-w-xs px-3 py-2 rounded-lg" style={{ color: 'var(--clay)', background: 'var(--clay-tint)' }}>
+                  Can't confirm access right now — this device couldn't reach the server. No PIN will work until this is resolved. Check your connection (or an ad/privacy-blocker extension) and refresh.
+                </div>
+              )}
               <input
                 value={pinInput}
                 onChange={(e) => { setPinInput(e.target.value); setPinError(''); }}
