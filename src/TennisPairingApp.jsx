@@ -578,7 +578,79 @@ function directoryToRows(directory, asOfYear) {
 /* ================= app ================= */
 
 const DIRECTORY_KEY = 'player-directory';
-const WEEKLY_KEY = 'weekly-state-v2';
+
+/* ---- weekly session scoping ------------------------------------------------
+   The pairing tab is Tier 1: open, no PIN, no identity at all. There is nothing to
+   key a per-user session off except the browser itself, so each browser profile mints
+   a random id once and namespaces its own weekly document with it. Two organizers can
+   then build separate sheets for the same day without overwriting each other.
+
+   This is per browser PROFILE, not per physical device - Chrome and Brave on one
+   laptop are two sessions, an incognito window is a third, and clearing site data
+   starts fresh. That is understood and accepted; the session list on the Today tab is
+   the escape hatch for the phone-built-it / laptop-needs-it case.
+
+   Directory, match history and the admin registry are deliberately NOT scoped - they
+   stay club-wide and shared exactly as before.                                    */
+const WEEKLY_KEY_BASE = 'weekly-state-v2';
+// Before scoping, every browser read and wrote this single document. Kept as a
+// migration source so an in-progress week isn't lost the first time this build loads.
+const LEGACY_WEEKLY_KEY = WEEKLY_KEY_BASE;
+// Scoped documents are `weekly-state-v2:<id>`. The trailing colon matters: without it
+// the bare legacy key would match the prefix and be listed as somebody's session.
+const SESSION_KEY_PREFIX = `${WEEKLY_KEY_BASE}:`;
+const DEVICE_ID_STORAGE_KEY = 'court-call-device-id';
+
+// localStorage is not universally available - Safari in private mode throws on write,
+// and the claude.ai artifact preview has no localStorage at all. When it can't be used
+// this returns null and the app falls back to the single shared document it always
+// used: degraded to the previous behaviour rather than broken.
+function readDeviceId() {
+  try {
+    if (typeof localStorage === 'undefined' || !localStorage) return null;
+    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing) return existing;
+    const minted = uid();
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, minted);
+    return minted;
+  } catch {
+    return null;
+  }
+}
+
+function weeklyKeyFor(deviceId) {
+  return deviceId ? `${WEEKLY_KEY_BASE}:${deviceId}` : WEEKLY_KEY_BASE;
+}
+
+function isSessionKey(key) {
+  return typeof key === 'string' && key.startsWith(SESSION_KEY_PREFIX) && key.length > SESSION_KEY_PREFIX.length;
+}
+
+// One-line summary of somebody else's session, built only from what's already stored.
+function describeSession(state) {
+  if (!state) return 'Empty session';
+  const parts = [];
+  if (state.sessionDate) parts.push(formatSessionDate(state.sessionDate));
+  if (state.sessionTime) parts.push(formatSessionTime(state.sessionTime));
+  const n = Array.isArray(state.playingIds) ? state.playingIds.length : 0;
+  parts.push(`${n} playing`);
+  if (state.schedule && state.schedule.rounds && state.schedule.rounds.length) {
+    parts.push(`${state.schedule.rounds.length} sets generated`);
+  }
+  return parts.join(' \u00b7 ');
+}
+
+const DEVICE_ID = readDeviceId();
+const WEEKLY_KEY = weeklyKeyFor(DEVICE_ID);
+
+/* ---- idle locking ----------------------------------------------------------
+   Unlocking a tier used to last until the Lock & Exit button was pressed or the page
+   reloaded, which on a phone left on the bench meant indefinitely. These are IDLE
+   timers: any interaction resets them, so nobody actively working is ever interrupted.
+   A warning appears before the lock so an open edit form is never lost silently.    */
+const ADMIN_IDLE_LOCK_MS = 10 * 60 * 1000;
+const SUPERUSER_IDLE_LOCK_MS = 5 * 60 * 1000;
+const IDLE_WARNING_MS = 60 * 1000;
 const HISTORY_KEY = 'match-history';
 const PIN_KEY = 'directory-pin';
 const ADMIN_REGISTRY_KEY = 'admin-registry';
@@ -975,8 +1047,14 @@ export default function TennisPairingApp() {
   const [importYear, setImportYear] = useState(String(THIS_YEAR));
   const [importStatus, setImportStatus] = useState('');
   const [pendingImport, setPendingImport] = useState(null);
+  const [lockCountdown, setLockCountdown] = useState(null); // seconds left before an idle lock, or null
+  const [lockNotice, setLockNotice] = useState('');
+  const [otherSessions, setOtherSessions] = useState([]);
+  const [showOtherSessions, setShowOtherSessions] = useState(false);
+  const [adoptedFromLegacy, setAdoptedFromLegacy] = useState(false);
   const fileInputRef = useRef(null);
   const copyFallbackRef = useRef(null);
+  const lastActivityRef = useRef(Date.now());
 
   useEffect(() => {
     if (copyStatus === 'fallback' && copyFallbackRef.current) {
@@ -984,6 +1062,72 @@ export default function TennisPairingApp() {
       copyFallbackRef.current.select();
     }
   }, [copyStatus]);
+
+  // Every unlocked tier drops at once, and every piece of half-entered state that
+  // belongs to those tiers is cleared with it. currentAdminName especially: leaving it
+  // set would attribute the next person's actions to whoever unlocked last.
+  const lockAllTiers = useCallback((notice) => {
+    setDirectoryUnlocked(false);
+    setSuperuserUnlocked(false);
+    setShowSuperuserGate(false);
+    setCurrentAdminName(null);
+    setEditingId(null);
+    setClearHistoryStep('idle');
+    setClearHistoryPinInput('');
+    setClearHistoryPinError('');
+    setPinInput('');
+    setPinError('');
+    setSuperuserPinInput('');
+    setSuperuserPinError('');
+    setNewAdminPlayerId('');
+    setNewAdminPin('');
+    setNewAdminPinError('');
+    setNewPinInput('');
+    setPendingImport(null);
+    setImportStatus('');
+    setLockCountdown(null);
+    setLockNotice(notice || '');
+  }, []);
+
+  const adminTierOpen = directoryUnlocked || clearHistoryStep === 'unlocked' || clearHistoryStep === 'confirm';
+  const anyTierOpen = adminTierOpen || superuserUnlocked;
+
+  useEffect(() => {
+    if (!anyTierOpen) { setLockCountdown(null); return undefined; }
+
+    // Superuser is the shortest fuse, and it wins whenever it's open - being inside the
+    // Directory at the same time must not extend it to the longer Admin window.
+    const limitMs = superuserUnlocked ? SUPERUSER_IDLE_LOCK_MS : ADMIN_IDLE_LOCK_MS;
+    lastActivityRef.current = Date.now();
+    setLockCountdown(null);
+
+    const markActive = () => { lastActivityRef.current = Date.now(); };
+    const events = ['pointerdown', 'keydown', 'input', 'focusin', 'wheel', 'touchstart'];
+    events.forEach((ev) => window.addEventListener(ev, markActive, { passive: true }));
+
+    const tick = setInterval(() => {
+      const idleFor = Date.now() - lastActivityRef.current;
+      const remaining = limitMs - idleFor;
+      if (remaining <= 0) {
+        const mins = Math.round(limitMs / 60000);
+        lockAllTiers(`Locked after ${mins} minutes with no activity. Enter your PIN to carry on.`);
+      } else if (remaining <= IDLE_WARNING_MS) {
+        setLockCountdown(Math.ceil(remaining / 1000));
+      } else {
+        setLockCountdown((prev) => (prev === null ? prev : null));
+      }
+    }, 1000);
+
+    return () => {
+      clearInterval(tick);
+      events.forEach((ev) => window.removeEventListener(ev, markActive));
+    };
+  }, [anyTierOpen, superuserUnlocked, lockAllTiers]);
+
+  function stayUnlocked() {
+    lastActivityRef.current = Date.now();
+    setLockCountdown(null);
+  }
 
   const loadAll = useCallback(async () => {
     const [dirResult, weeklyResult, historyResult, pinResult, registryResult, auditResult] = await Promise.allSettled([
@@ -1008,8 +1152,31 @@ export default function TennisPairingApp() {
       setDirectoryLoadError(false);
     }
 
+    let weeklyState = null;
     if (weeklyResult.status === 'fulfilled' && weeklyResult.value && weeklyResult.value.value) {
-      const w = JSON.parse(weeklyResult.value.value);
+      weeklyState = JSON.parse(weeklyResult.value.value);
+    } else if (weeklyResult.status === 'rejected' && isConfirmedNotFound(weeklyResult.reason) && DEVICE_ID) {
+      // This browser has no scoped session yet. Before treating that as a blank week,
+      // check the old shared document and adopt it, so a week already in progress
+      // carries over rather than appearing to vanish on the day this build ships.
+      // The legacy document is copied, never moved - any browser that hasn't loaded
+      // this build yet is still reading it.
+      //
+      // Note the isConfirmedNotFound guard: on an ambiguous failure we fall through and
+      // touch nothing, for exactly the same reason the registry migration does.
+      try {
+        const legacy = await window.storage.get(LEGACY_WEEKLY_KEY, true);
+        if (legacy && legacy.value) {
+          weeklyState = JSON.parse(legacy.value);
+          setAdoptedFromLegacy(true);
+        }
+      } catch {
+        // Nothing to adopt, or it couldn't be read - a genuinely fresh session either way.
+      }
+    }
+
+    if (weeklyState) {
+      const w = weeklyState;
       setPlayingIds(w.playingIds || []);
       if (w.courts) setCourts(w.courts);
       const loadedDate = w.sessionDate || todayISO();
@@ -1202,6 +1369,7 @@ export default function TennisPairingApp() {
       sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
+      updatedAt: Date.now(),
     };
     if (incomingPlayingIds !== undefined) setPlayingIds(incomingPlayingIds);
     setCourts(nextCourts);
@@ -1230,9 +1398,53 @@ export default function TennisPairingApp() {
     }
   }
 
+  // Other browsers' sessions, listed so a sheet built on a phone is reachable from a
+  // laptop. Read-only: nothing here ever writes to somebody else's document.
+  const loadOtherSessions = useCallback(async () => {
+    if (!DEVICE_ID || !window.storage.list) { setOtherSessions([]); return; }
+    try {
+      const res = await window.storage.list(SESSION_KEY_PREFIX, true);
+      const keys = (res && res.keys ? res.keys : []).filter((k) => isSessionKey(k) && k !== WEEKLY_KEY);
+      const found = [];
+      for (const k of keys) {
+        try {
+          const r = await window.storage.get(k, true);
+          if (r && r.value) found.push({ key: k, state: JSON.parse(r.value) });
+        } catch {
+          // One unreadable session shouldn't hide the rest.
+        }
+      }
+      found.sort((a, b) => ((b.state && b.state.updatedAt) || 0) - ((a.state && a.state.updatedAt) || 0));
+      setOtherSessions(found);
+    } catch {
+      setOtherSessions([]);
+    }
+  }, []);
+
+  useEffect(() => { if (loaded) loadOtherSessions(); }, [loaded, loadOtherSessions]);
+
+  // Takes a copy into this browser's own session. Deliberately a copy, not a handover:
+  // if two browsers pointed at one document we would be straight back to the
+  // last-write-wins overwriting this whole change exists to remove.
+  function adoptSessionCopy(entry) {
+    const src = (entry && entry.state) || {};
+    persistWeekly({
+      playingIds: src.playingIds || [],
+      courts: src.courts || [],
+      sessionDate: src.sessionDate && src.sessionDate >= todayISO() ? src.sessionDate : todayISO(),
+      sessionTime: src.sessionTime || '',
+      sessionDuration: src.sessionDuration || '',
+      rounds: src.rounds || 3,
+      schedule: src.schedule || null,
+    });
+    setShowOtherSessions(false);
+    setSaveError('');
+  }
+
   async function handleRefresh() {
     setSyncing(true);
     await loadAll();
+    await loadOtherSessions();
     setTodaySearch('');
     setSyncing(false);
   }
@@ -1888,6 +2100,24 @@ export default function TennisPairingApp() {
         </div>
       ) : (
         <div className="max-w-xl mx-auto">
+          {lockCountdown !== null && (
+            <div className="px-4 sm:px-5 py-2.5 flex items-center gap-2 text-sm" style={{ background: 'var(--clay-tint)', color: 'var(--clay)' }}>
+              <span className="flex-1">
+                Locking in {lockCountdown} second{lockCountdown === 1 ? '' : 's'} — anything you're part-way through editing will be lost.
+              </span>
+              <button type="button" onClick={stayUnlocked} className="tp-focus font-semibold text-xs px-2.5 py-1 rounded-md" style={{ background: 'var(--clay)', color: '#fff' }}>
+                Still here
+              </button>
+            </div>
+          )}
+          {lockNotice && (
+            <div className="px-4 sm:px-5 py-2.5 flex items-center gap-2 text-sm" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+              <span className="flex-1">{lockNotice}</span>
+              <button type="button" onClick={() => setLockNotice('')} className="tp-focus font-semibold text-xs underline">
+                Dismiss
+              </button>
+            </div>
+          )}
           {saveError && (
             <div className="px-4 sm:px-5 py-2.5 flex items-center gap-2 text-sm" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
               <span className="flex-1">⚠ {saveError}</span>
@@ -2021,6 +2251,52 @@ export default function TennisPairingApp() {
                   Start New Week
                 </button>
               </div>
+
+              {adoptedFromLegacy && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                  This week's sheet has been carried over into this browser's own session. From now on
+                  it's yours to edit — other people's sheets no longer overwrite it, and yours no
+                  longer overwrites theirs.
+                </div>
+              )}
+
+              {DEVICE_ID && otherSessions.length > 0 && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowOtherSessions(!showOtherSessions)}
+                    className="tp-focus text-xs font-medium"
+                    style={{ color: 'var(--court)' }}
+                  >
+                    {showOtherSessions ? 'Hide' : 'Show'} {otherSessions.length} other session{otherSessions.length === 1 ? '' : 's'} in progress
+                  </button>
+                  {showOtherSessions && (
+                    <div className="tp-card p-3 mt-2 space-y-2">
+                      <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                        Each browser keeps its own sheet, so these belong to other people or to your
+                        own other devices. Taking a copy brings one into this browser to work on —
+                        it never changes theirs.
+                      </div>
+                      {otherSessions.map((entry) => (
+                        <div key={entry.key} className="flex items-center gap-2">
+                          <span className="flex-1 text-xs">{describeSession(entry.state)}</span>
+                          <button
+                            type="button"
+                            onClick={() => adoptSessionCopy(entry)}
+                            className="tp-input tp-focus px-2 py-1.5 text-xs shrink-0"
+                            style={{ color: 'var(--court)' }}
+                          >
+                            Take a copy
+                          </button>
+                        </div>
+                      ))}
+                      <div className="text-xs" style={{ color: 'var(--clay)' }}>
+                        Taking a copy replaces what's currently on this browser's sheet.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {confirmingUncheck && (
                 <div className="tp-card p-3 flex items-center justify-between text-sm gap-2">
@@ -2363,6 +2639,9 @@ export default function TennisPairingApp() {
             <div className="px-4 sm:px-5 py-10 flex flex-col items-center text-center gap-3">
               <Lock size={22} style={{ color: 'var(--muted)' }} />
               <div className="text-sm font-semibold">Enter PIN</div>
+              {lockNotice && (
+                <div className="text-xs max-w-xs" style={{ color: 'var(--muted)' }}>{lockNotice}</div>
+              )}
               {registryUnavailable && (
                 <div className="text-xs max-w-xs px-3 py-2 rounded-lg" style={{ color: 'var(--clay)', background: 'var(--clay-tint)' }}>
                   Can't confirm access right now — this device couldn't reach the server. No PIN will work until this is resolved. Check your connection (or an ad/privacy-blocker extension) and refresh.
