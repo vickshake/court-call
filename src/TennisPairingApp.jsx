@@ -575,6 +575,66 @@ function directoryToRows(directory, asOfYear) {
   }));
 }
 
+/* ================= usage summary ================= */
+
+// Built entirely from data the app already stores - session documents, match history
+// and the audit log. Nothing new is collected and nothing is sent anywhere; this is
+// only a reading of what's already in Firestore.
+//
+// Deliberately counts and dates only. With a club this small a per-browser breakdown
+// would be near enough to naming individuals, and "is this being used" doesn't need
+// that to be answered.
+function summarizeUsage({ sessions, history, auditLog, now }) {
+  const ref = now || Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const withinDays = (ts, days) => typeof ts === 'number' && ref - ts <= days * DAY;
+
+  const stamps = sessions
+    .map((entry) => (entry && entry.state && typeof entry.state.updatedAt === 'number' ? entry.state.updatedAt : null))
+    .filter((t) => t !== null);
+
+  // Sessions predating v0.51.0 have no updatedAt stamp - counted as existing, but
+  // never as recently active, since there's no honest basis for claiming they were.
+  const undated = sessions.length - stamps.length;
+
+  const datesPlayed = new Set();
+  let resultsLogged = 0;
+  let lastResultDate = null;
+  history.forEach((h) => {
+    if (!h || !h.date) return;
+    datesPlayed.add(h.date);
+    if (h.winner) resultsLogged += 1;
+    if (!lastResultDate || h.date > lastResultDate) lastResultDate = h.date;
+  });
+
+  const auditStamps = auditLog
+    .map((e) => (e && e.timestamp ? Date.parse(e.timestamp) : NaN))
+    .filter((t) => !Number.isNaN(t));
+
+  return {
+    browsersTotal: sessions.length,
+    browsersUndated: undated,
+    browsersActive7: stamps.filter((t) => withinDays(t, 7)).length,
+    browsersActive30: stamps.filter((t) => withinDays(t, 30)).length,
+    lastSessionActivity: stamps.length ? Math.max(...stamps) : null,
+    daysPlayed: datesPlayed.size,
+    resultsLogged,
+    lastResultDate,
+    adminActions: auditStamps.length,
+    adminActions30: auditStamps.filter((t) => withinDays(t, 30)).length,
+    lastAdminAction: auditStamps.length ? Math.max(...auditStamps) : null,
+  };
+}
+
+function relativeDay(ts) {
+  if (!ts) return 'never';
+  const days = Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${days} days ago`;
+  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 /* ================= app ================= */
 
 const DIRECTORY_KEY = 'player-directory';
@@ -1422,6 +1482,35 @@ export default function TennisPairingApp() {
   }, []);
 
   useEffect(() => { if (loaded) loadOtherSessions(); }, [loaded, loadOtherSessions]);
+
+  // Every session document, including this browser's own - only ever fetched while the
+  // Superuser console is open, so a normal visit does no extra reads.
+  const [allSessions, setAllSessions] = useState([]);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const loadAllSessions = useCallback(async () => {
+    if (!window.storage.list) { setAllSessions([]); return; }
+    setUsageLoading(true);
+    try {
+      const res = await window.storage.list(SESSION_KEY_PREFIX, true);
+      const keys = (res && res.keys ? res.keys : []).filter(isSessionKey);
+      const found = [];
+      for (const k of keys) {
+        try {
+          const r = await window.storage.get(k, true);
+          if (r && r.value) found.push({ key: k, state: JSON.parse(r.value) });
+        } catch {
+          // Skip anything unreadable rather than failing the whole summary.
+        }
+      }
+      setAllSessions(found);
+    } catch {
+      setAllSessions([]);
+    } finally {
+      setUsageLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (superuserUnlocked) loadAllSessions(); }, [superuserUnlocked, loadAllSessions]);
 
   // Takes a copy into this browser's own session. Deliberately a copy, not a handover:
   // if two browsers pointed at one document we would be straight back to the
@@ -2746,6 +2835,104 @@ export default function TennisPairingApp() {
                     Update
                   </button>
                 </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-semibold">Usage</div>
+                  <button
+                    type="button"
+                    onClick={loadAllSessions}
+                    className="tp-focus flex items-center gap-1 text-xs"
+                    style={{ color: 'var(--muted)' }}
+                  >
+                    <RefreshCw size={11} className={usageLoading ? 'animate-spin' : ''} />
+                    Recheck
+                  </button>
+                </div>
+                <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
+                  Read from what the app already stores &mdash; nothing extra is collected, and
+                  nothing leaves Firestore. Counts and dates only, deliberately: with a club this
+                  size, a per-person breakdown would name people without telling you much more.
+                </div>
+                {(() => {
+                  const u = summarizeUsage({ sessions: allSessions, history, auditLog, now: Date.now() });
+                  return (
+                    <div className="space-y-2">
+                      <div className="tp-card px-4 py-3">
+                        <div className="text-xs font-semibold mb-1.5">Sheets started</div>
+                        <div className="flex items-baseline gap-4 flex-wrap">
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.browsersTotal}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>in total</span>
+                          </div>
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.browsersActive7}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>active this week</span>
+                          </div>
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.browsersActive30}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>active in 30 days</span>
+                          </div>
+                        </div>
+                        <div className="text-xs mt-1.5" style={{ color: 'var(--muted)' }}>
+                          Last activity on any sheet: {relativeDay(u.lastSessionActivity)}.
+                        </div>
+                        <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                          Counts sheets, not people. A sheet appears the first time a browser marks
+                          someone in or changes the session &mdash; so anyone who opened the app,
+                          looked around and left is <em>not</em> counted here at all. The same person
+                          on a phone and a laptop counts twice, and clearing site data starts a new one.
+                          {u.browsersUndated > 0 && ` ${u.browsersUndated} predate${u.browsersUndated === 1 ? 's' : ''} this being tracked, so ${u.browsersUndated === 1 ? 'it has' : 'they have'} no date.`}
+                        </div>
+                      </div>
+
+                      <div className="tp-card px-4 py-3">
+                        <div className="text-xs font-semibold mb-1.5">Sessions actually played</div>
+                        <div className="flex items-baseline gap-4 flex-wrap">
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.daysPlayed}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>day{u.daysPlayed === 1 ? '' : 's'} with results</span>
+                          </div>
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.resultsLogged}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>winners marked</span>
+                          </div>
+                        </div>
+                        <div className="text-xs mt-1.5" style={{ color: 'var(--muted)' }}>
+                          Most recent logged result: {u.lastResultDate ? formatSessionDate(u.lastResultDate) : 'none yet'}.
+                          {' '}This is the strongest signal here &mdash; it takes real use to produce.
+                        </div>
+                      </div>
+
+                      <div className="tp-card px-4 py-3">
+                        <div className="text-xs font-semibold mb-1.5">Admin activity</div>
+                        <div className="flex items-baseline gap-4 flex-wrap">
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.adminActions30}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>in the last 30 days</span>
+                          </div>
+                          <div>
+                            <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{u.adminActions}</span>
+                            <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>logged in total</span>
+                          </div>
+                        </div>
+                        <div className="text-xs mt-1.5" style={{ color: 'var(--muted)' }}>
+                          Last admin action: {relativeDay(u.lastAdminAction)}. Named detail is in the
+                          activity log below.
+                        </div>
+                      </div>
+
+                      {u.browsersTotal === 0 && u.resultsLogged === 0 && (
+                        <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
+                          No sheets have been started yet. If you've shared the link, people may still
+                          have opened it and looked around &mdash; that leaves no record here. Marking
+                          anyone in is the first thing that does.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>
