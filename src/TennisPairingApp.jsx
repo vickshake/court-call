@@ -703,6 +703,117 @@ function describeSession(state) {
 const DEVICE_ID = readDeviceId();
 const WEEKLY_KEY = weeklyKeyFor(DEVICE_ID);
 
+/* ---- usage telemetry -------------------------------------------------------
+   Answers "is this actually being used, and which parts" without any third-party
+   analytics. Scoped per browser for the same reason weekly sheets are: one shared
+   document would mean two phones flushing at once silently overwriting each other.
+
+   Deliberately narrow. Counts and durations only - no names, no IP, no location, no
+   per-action timeline that could be replayed as "who did what, when". A browser with
+   no id (no localStorage) records nothing at all rather than writing unscoped.        */
+const TELEMETRY_KEY_PREFIX = 'usage-telemetry:';
+const TELEMETRY_KEY = DEVICE_ID ? `${TELEMETRY_KEY_PREFIX}${DEVICE_ID}` : null;
+const TELEMETRY_FLUSH_MS = 60 * 1000;
+// Engagement stops accruing after this long without interaction, so a tab left open
+// all afternoon doesn't get counted as an afternoon of use.
+const ENGAGEMENT_IDLE_CUTOFF_MS = 2 * 60 * 1000;
+
+function isTelemetryKey(key) {
+  return typeof key === 'string' && key.startsWith(TELEMETRY_KEY_PREFIX) && key.length > TELEMETRY_KEY_PREFIX.length;
+}
+
+// Coarse device class from the user agent. Deliberately two buckets - anything finer
+// starts to look like fingerprinting and wouldn't change a decision anyway.
+function deviceClass() {
+  try {
+    const ua = navigator.userAgent || '';
+    return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
+  } catch {
+    return 'unknown';
+  }
+}
+
+// Whether it's running as an installed PWA rather than a browser tab - the one signal
+// that says someone cared enough to add it to their home screen.
+function isInstalledApp() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  } catch {
+    return false;
+  }
+}
+
+function blankTelemetry() {
+  return {
+    firstSeen: null, lastSeen: null, visits: 0, engagementMs: 0,
+    tabs: {}, actions: {}, device: deviceClass(), installed: false,
+  };
+}
+
+// Merges an in-memory delta into a stored record. Additive on purpose: a flush can
+// never lower a count, so a stale read can't erase history.
+function mergeTelemetry(stored, delta) {
+  const base = stored && typeof stored === 'object' ? stored : blankTelemetry();
+  const out = {
+    firstSeen: base.firstSeen || delta.firstSeen || Date.now(),
+    lastSeen: Math.max(base.lastSeen || 0, delta.lastSeen || 0) || Date.now(),
+    visits: (base.visits || 0) + (delta.visits || 0),
+    engagementMs: (base.engagementMs || 0) + (delta.engagementMs || 0),
+    tabs: { ...base.tabs },
+    actions: { ...base.actions },
+    device: delta.device || base.device || 'unknown',
+    installed: delta.installed || base.installed || false,
+  };
+  Object.entries(delta.tabs || {}).forEach(([k, v]) => { out.tabs[k] = (out.tabs[k] || 0) + v; });
+  Object.entries(delta.actions || {}).forEach(([k, v]) => { out.actions[k] = (out.actions[k] || 0) + v; });
+  return out;
+}
+
+// Rolls every browser's record into one picture for the Superuser panel.
+function summarizeTelemetry(records, now) {
+  const ref = now || Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const tabs = {};
+  const actions = {};
+  let engagementMs = 0;
+  let visits = 0;
+  let mobile = 0;
+  let desktop = 0;
+  let installed = 0;
+  let active7 = 0;
+  let lastSeen = null;
+
+  records.forEach((r) => {
+    if (!r) return;
+    engagementMs += r.engagementMs || 0;
+    visits += r.visits || 0;
+    if (r.device === 'mobile') mobile += 1;
+    else if (r.device === 'desktop') desktop += 1;
+    if (r.installed) installed += 1;
+    if (r.lastSeen && ref - r.lastSeen <= 7 * DAY) active7 += 1;
+    if (r.lastSeen && (!lastSeen || r.lastSeen > lastSeen)) lastSeen = r.lastSeen;
+    Object.entries(r.tabs || {}).forEach(([k, v]) => { tabs[k] = (tabs[k] || 0) + v; });
+    Object.entries(r.actions || {}).forEach(([k, v]) => { actions[k] = (actions[k] || 0) + v; });
+  });
+
+  const tabTotal = Object.values(tabs).reduce((a, b) => a + b, 0);
+  return {
+    browsers: records.length, active7, visits, engagementMs, lastSeen,
+    mobile, desktop, installed, tabs, actions, tabTotal,
+    avgVisitMs: visits > 0 ? Math.round(engagementMs / visits) : 0,
+  };
+}
+
+function formatDurationMs(ms) {
+  if (!ms || ms < 1000) return '0m';
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return 'under a minute';
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem === 0 ? `${h}h` : `${h}h ${rem}m`;
+}
+
 /* ---- idle locking ----------------------------------------------------------
    Unlocking a tier used to last until the Lock & Exit button was pressed or the page
    reloaded, which on a phone left on the bench meant indefinitely. These are IDLE
@@ -1189,6 +1300,88 @@ export default function TennisPairingApp() {
     setLockCountdown(null);
   }
 
+  /* ---- usage telemetry recording ---- */
+  const telemetryRef = useRef({ tabs: {}, actions: {}, engagementMs: 0, visits: 0, dirty: false });
+  const engagementAnchorRef = useRef(Date.now());
+
+  // Accrues time only while the page is visible AND recently interacted with, so a tab
+  // left open on the bench doesn't inflate engagement into hours of imaginary use.
+  const accrueEngagement = useCallback(() => {
+    const now = Date.now();
+    const since = now - engagementAnchorRef.current;
+    engagementAnchorRef.current = now;
+    if (since <= 0) return;
+    const idleFor = now - lastActivityRef.current;
+    if (idleFor > ENGAGEMENT_IDLE_CUTOFF_MS) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    telemetryRef.current.engagementMs += Math.min(since, ENGAGEMENT_IDLE_CUTOFF_MS);
+    telemetryRef.current.dirty = true;
+  }, []);
+
+  const recordAction = useCallback((name) => {
+    if (!TELEMETRY_KEY) return;
+    const t = telemetryRef.current;
+    t.actions[name] = (t.actions[name] || 0) + 1;
+    t.dirty = true;
+  }, []);
+
+  const recordTab = useCallback((name) => {
+    if (!TELEMETRY_KEY) return;
+    const t = telemetryRef.current;
+    t.tabs[name] = (t.tabs[name] || 0) + 1;
+    t.dirty = true;
+  }, []);
+
+  // Read-modify-write, but additively - see mergeTelemetry. Batched rather than fired
+  // per tap: a write per tab switch would be both wasteful and noisy in Firestore.
+  const flushTelemetry = useCallback(async () => {
+    if (!TELEMETRY_KEY) return;
+    accrueEngagement();
+    const t = telemetryRef.current;
+    if (!t.dirty) return;
+    const delta = {
+      tabs: t.tabs, actions: t.actions, engagementMs: t.engagementMs, visits: t.visits,
+      firstSeen: Date.now(), lastSeen: Date.now(), device: deviceClass(), installed: isInstalledApp(),
+    };
+    telemetryRef.current = { tabs: {}, actions: {}, engagementMs: 0, visits: 0, dirty: false };
+    try {
+      let stored = null;
+      try {
+        const res = await window.storage.get(TELEMETRY_KEY, true);
+        if (res && res.value) stored = JSON.parse(res.value);
+      } catch {
+        // No record yet, or unreadable - start a fresh one rather than losing the delta.
+      }
+      await window.storage.set(TELEMETRY_KEY, JSON.stringify(mergeTelemetry(stored, delta)), true);
+    } catch {
+      // Telemetry must never surface an error to someone trying to organise tennis.
+      // The delta is dropped; nothing else is affected.
+    }
+  }, [accrueEngagement]);
+
+  useEffect(() => {
+    if (!TELEMETRY_KEY || !loaded) return undefined;
+    telemetryRef.current.visits += 1;
+    telemetryRef.current.dirty = true;
+    engagementAnchorRef.current = Date.now();
+
+    const onHide = () => { accrueEngagement(); flushTelemetry(); };
+    const onVisibility = () => {
+      if (document.hidden) onHide();
+      else engagementAnchorRef.current = Date.now();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onHide);
+
+    const timer = setInterval(() => { accrueEngagement(); flushTelemetry(); }, TELEMETRY_FLUSH_MS);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onHide);
+      onHide();
+    };
+  }, [loaded, accrueEngagement, flushTelemetry]);
+
   const loadAll = useCallback(async () => {
     const [dirResult, weeklyResult, historyResult, pinResult, registryResult, auditResult] = await Promise.allSettled([
       window.storage.get(DIRECTORY_KEY, true),
@@ -1510,7 +1703,32 @@ export default function TennisPairingApp() {
     }
   }, []);
 
-  useEffect(() => { if (superuserUnlocked) loadAllSessions(); }, [superuserUnlocked, loadAllSessions]);
+  const [telemetryRecords, setTelemetryRecords] = useState([]);
+  const loadTelemetry = useCallback(async () => {
+    if (!window.storage.list) { setTelemetryRecords([]); return; }
+    try {
+      const res = await window.storage.list(TELEMETRY_KEY_PREFIX, true);
+      const keys = (res && res.keys ? res.keys : []).filter(isTelemetryKey);
+      const found = [];
+      for (const k of keys) {
+        try {
+          const r = await window.storage.get(k, true);
+          if (r && r.value) found.push(JSON.parse(r.value));
+        } catch {
+          // Skip anything unreadable rather than failing the whole summary.
+        }
+      }
+      setTelemetryRecords(found);
+    } catch {
+      setTelemetryRecords([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!superuserUnlocked) return;
+    // Flush first so the console reflects this visit too, not just past ones.
+    flushTelemetry().then(() => { loadAllSessions(); loadTelemetry(); });
+  }, [superuserUnlocked, loadAllSessions, loadTelemetry, flushTelemetry]);
 
   // Takes a copy into this browser's own session. Deliberately a copy, not a handover:
   // if two browsers pointed at one document we would be straight back to the
@@ -1586,6 +1804,7 @@ export default function TennisPairingApp() {
   }
 
   function handleMatchNames() {
+    recordAction('roster_paste');
     const raw = extractNamesFromPaste(namesText).map((n) => {
       const r = matchNameToDirectory(n, directory);
       return r && r.status === 'unmatched' ? { ...r, sex: 'M', cta: '3.5' } : r;
@@ -1677,12 +1896,14 @@ export default function TennisPairingApp() {
   }
 
   function togglePlaying(id) {
+    recordAction('mark_player');
     const next = playingIds.includes(id) ? playingIds.filter((pid) => pid !== id) : [...playingIds, id];
     persistWeekly({ playingIds: next });
     setTodaySearch('');
   }
 
   function handleStartNewWeek() {
+    recordAction('new_week');
     persistWeekly({ playingIds: [], schedule: null, sessionDate: todayISO(), sessionTime: '', sessionDuration: '' });
     setMatchResults(null);
     setNamesText('');
@@ -1885,6 +2106,7 @@ export default function TennisPairingApp() {
   }
 
   function handleGenerate() {
+    recordAction('generate');
     const players = directory.filter((p) => playingIds.includes(p.id));
     const usableCourts = assignedCourts.filter((c) => c.courtNumber !== null);
     const result = generateSchedule(players, usableCourts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds);
@@ -1914,6 +2136,7 @@ export default function TennisPairingApp() {
     };
     const withoutOld = history.filter((h) => h.id !== recordId);
     persistHistory([...withoutOld, entry]);
+    if (winner) recordAction('winner');
     if (winner) {
       setCelebratingMatchId(recordId);
       setTimeout(() => setCelebratingMatchId((cur) => (cur === recordId ? null : cur)), 1400);
@@ -1950,6 +2173,7 @@ export default function TennisPairingApp() {
   }
 
   async function handleCopyForGroupMe() {
+    recordAction('copy_out');
     let latest = schedule;
     try {
       const res = await window.storage.get(WEEKLY_KEY, true);
@@ -2248,7 +2472,7 @@ export default function TennisPairingApp() {
               <button
                 key={t.key}
                 type="button"
-                onClick={() => setTab(t.key)}
+                onClick={() => { setTab(t.key); recordTab(t.key); }}
                 className="tp-tab tp-focus px-3.5 py-2 text-sm"
                 style={{
                   background: tab === t.key ? 'var(--court)' : 'transparent',
@@ -2842,7 +3066,7 @@ export default function TennisPairingApp() {
                   <div className="text-sm font-semibold">Usage</div>
                   <button
                     type="button"
-                    onClick={loadAllSessions}
+                    onClick={() => { flushTelemetry().then(() => { loadAllSessions(); loadTelemetry(); }); }}
                     className="tp-focus flex items-center gap-1 text-xs"
                     style={{ color: 'var(--muted)' }}
                   >
@@ -2922,6 +3146,97 @@ export default function TennisPairingApp() {
                           activity log below.
                         </div>
                       </div>
+
+                      {(() => {
+                        const t = summarizeTelemetry(telemetryRecords, Date.now());
+                        const TAB_LABELS = { today: 'Today', courts: 'Courts', results: 'Results', history: 'History', directory: 'Directory' };
+                        const ACTION_LABELS = {
+                          mark_player: 'Players marked in', roster_paste: 'Chat threads pasted',
+                          generate: 'Pairings generated', winner: 'Winners marked',
+                          copy_out: 'Sheets copied out', new_week: 'New weeks started',
+                        };
+                        const tabRows = Object.entries(t.tabs).sort((a, b) => b[1] - a[1]);
+                        const actionRows = Object.entries(ACTION_LABELS)
+                          .map(([k, label]) => [label, t.actions[k] || 0])
+                          .filter(([, v]) => v > 0);
+                        if (t.browsers === 0) {
+                          return (
+                            <div className="tp-card px-4 py-3">
+                              <div className="text-xs font-semibold mb-1">How it's being used</div>
+                              <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                                Nothing recorded yet. This starts collecting from v0.52.0 onward, so
+                                anything before that deploy left no trace.
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <>
+                            <div className="tp-card px-4 py-3">
+                              <div className="text-xs font-semibold mb-1.5">Time in the app</div>
+                              <div className="flex items-baseline gap-4 flex-wrap">
+                                <div>
+                                  <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{formatDurationMs(t.engagementMs)}</span>
+                                  <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>total, all browsers</span>
+                                </div>
+                                <div>
+                                  <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{t.visits}</span>
+                                  <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>visit{t.visits === 1 ? '' : 's'}</span>
+                                </div>
+                                <div>
+                                  <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{formatDurationMs(t.avgVisitMs)}</span>
+                                  <span className="text-xs ml-1.5" style={{ color: 'var(--muted)' }}>average visit</span>
+                                </div>
+                              </div>
+                              <div className="text-xs mt-1.5" style={{ color: 'var(--muted)' }}>
+                                {t.browsers} browser{t.browsers === 1 ? '' : 's'} recorded, {t.active7} active this week ·
+                                {' '}{t.mobile} mobile / {t.desktop} desktop
+                                {t.installed > 0 ? ` · ${t.installed} installed to a home screen` : ''}.
+                                {' '}Last seen {relativeDay(t.lastSeen)}.
+                              </div>
+                              <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                Time only accrues while the app is open and being touched — a tab left
+                                sitting on the bench stops counting after two minutes.
+                              </div>
+                            </div>
+
+                            {tabRows.length > 0 && (
+                              <div className="tp-card px-4 py-3">
+                                <div className="text-xs font-semibold mb-2">Which tabs get opened</div>
+                                <div className="space-y-1.5">
+                                  {tabRows.map(([key, count]) => (
+                                    <div key={key} className="flex items-center gap-2">
+                                      <span className="text-xs w-16 shrink-0">{TAB_LABELS[key] || key}</span>
+                                      <span className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--line)' }}>
+                                        <span className="block h-full" style={{ width: `${t.tabTotal ? (count / t.tabTotal) * 100 : 0}%`, background: 'var(--court)' }} />
+                                      </span>
+                                      <span className="text-xs w-8 text-right shrink-0" style={{ color: 'var(--muted)' }}>{count}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
+                                  Counts tab switches, so Today is naturally under-represented — it's
+                                  where the app already opens.
+                                </div>
+                              </div>
+                            )}
+
+                            {actionRows.length > 0 && (
+                              <div className="tp-card px-4 py-3">
+                                <div className="text-xs font-semibold mb-1.5">What people actually do</div>
+                                <div className="space-y-1">
+                                  {actionRows.map(([label, count]) => (
+                                    <div key={label} className="flex items-center justify-between text-xs">
+                                      <span style={{ color: 'var(--muted)' }}>{label}</span>
+                                      <span className="font-semibold">{count}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
 
                       {u.browsersTotal === 0 && u.resultsLogged === 0 && (
                         <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
