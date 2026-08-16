@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
+import { getAnalytics, isSupported, logEvent, setAnalyticsCollectionEnabled } from 'firebase/analytics';
 import { firebaseConfig } from './firebaseConfig';
 
 const app = initializeApp(firebaseConfig);
@@ -21,6 +22,50 @@ try {
   });
 } catch (e) {
   console.error('App Check init failed:', e);
+}
+
+/* ---- Google Analytics ------------------------------------------------------
+   Uses the measurementId already present in firebaseConfig. getAnalytics() loads
+   gtag.js itself, so there is no script tag to paste into index.html.
+
+   Everything here is best-effort and deliberately silent on failure. GA is blocked
+   outright by Brave Shields, uBlock and Safari's strict protection - the same class
+   of block that caused the directory incident when App Check was affected. A blocked
+   GA must never be visible to someone trying to organise tennis, so every path
+   degrades to a no-op rather than an error.
+
+   isSupported() is checked rather than assumed: it returns false in environments
+   without the APIs GA needs, and calling getAnalytics() there throws.
+
+   Note this only ever SENDS. Reading these numbers back requires the GA Data API and
+   a service-account credential, which cannot live in a public JS bundle - so GA data
+   is read at analytics.google.com, while the in-app Superuser panel reads Firestore.  */
+let analytics = null;
+
+isSupported()
+  .then((supported) => {
+    if (!supported) return;
+    analytics = getAnalytics(app);
+    setAnalyticsCollectionEnabled(analytics, true);
+  })
+  .catch(() => {
+    // Blocked, unsupported, or offline - stay silent and leave analytics null.
+  });
+
+// Exposed on window rather than imported by the app, for the same reason window.storage
+// is: TennisPairingApp.jsx must keep running in the claude.ai preview, where this file
+// and Firebase itself do not exist. There the call simply never happens.
+if (typeof window !== 'undefined') {
+  window.__CC_ANALYTICS__ = {
+    log(name, params) {
+      try {
+        if (!analytics) return;
+        logEvent(analytics, name, params || {});
+      } catch {
+        // Never surface an analytics failure to the user.
+      }
+    },
+  };
 }
 
 const db = getFirestore(app);

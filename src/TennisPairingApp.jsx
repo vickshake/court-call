@@ -804,6 +804,23 @@ function summarizeTelemetry(records, now) {
   };
 }
 
+// Sends an event to Google Analytics if it's available. GA lives outside this file
+// (see firebaseStorage.js) and is absent entirely in the claude.ai preview, so this is
+// a no-op there. Fired alongside the in-app telemetry, never instead of it: GA sees
+// geography and Google's own reporting, the Firestore panel sees everyone including
+// people whose browser blocks GA.
+//
+// Same discipline as the in-app telemetry: event names and coarse counts only. No
+// player names, no ids, nothing that identifies who did something.
+function trackEvent(name, params) {
+  try {
+    if (typeof window === 'undefined' || !window.__CC_ANALYTICS__) return;
+    window.__CC_ANALYTICS__.log(name, params);
+  } catch {
+    // Analytics must never interrupt anything.
+  }
+}
+
 function formatDurationMs(ms) {
   if (!ms || ms < 1000) return '0m';
   const mins = Math.round(ms / 60000);
@@ -1319,6 +1336,7 @@ export default function TennisPairingApp() {
   }, []);
 
   const recordAction = useCallback((name) => {
+    trackEvent(name);
     if (!TELEMETRY_KEY) return;
     const t = telemetryRef.current;
     t.actions[name] = (t.actions[name] || 0) + 1;
@@ -1326,6 +1344,9 @@ export default function TennisPairingApp() {
   }, []);
 
   const recordTab = useCallback((name) => {
+    // GA sees a single-page app with no router, so a tab switch would otherwise be
+    // invisible to it. screen_view is GA's own convention for exactly this.
+    trackEvent('screen_view', { firebase_screen: name, screen_name: name });
     if (!TELEMETRY_KEY) return;
     const t = telemetryRef.current;
     t.tabs[name] = (t.tabs[name] || 0) + 1;
