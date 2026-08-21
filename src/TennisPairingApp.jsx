@@ -682,6 +682,61 @@ function weeklyKeyFor(deviceId) {
   return deviceId ? `${WEEKLY_KEY_BASE}:${deviceId}` : WEEKLY_KEY_BASE;
 }
 
+/* ---- session retention -----------------------------------------------------
+   Session documents otherwise accumulate one per browser profile forever, and the
+   ones most worth clearing are exactly those whose browser never comes back - so a
+   browser tidying only its own would never reach them. Cleanup therefore has to be
+   done by whoever is present, on behalf of browsers that aren't.
+
+   Bounded tightly, because this is one browser deleting another's document:
+     - idle 8+ days (a full weekly cycle plus a day of margin), AND
+     - its session date has already passed.
+   A sheet dated today or later is never deleted at any age, so a week-ahead plan
+   survives even when it hasn't been touched since it was made.
+
+   Only session documents are ever removed here. The directory, match history, the
+   admin registry and usage telemetry are separate documents and are never touched -
+   the worst case is a regenerable pairing sheet, never a logged result.           */
+const SESSION_RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
+// A trickle, not a sweep - no burst of deletes when the club opens the app together.
+const MAX_DELETES_PER_LOAD = 3;
+
+function sessionLastTouched(state) {
+  if (!state) return null;
+  return typeof state.updatedAt === 'number' ? state.updatedAt : null;
+}
+
+// True when a session has nothing worth copying. Hidden from the list on sight, but
+// still left to the ordinary 8-day rule rather than deleted early.
+function isEmptySession(state) {
+  if (!state) return true;
+  const players = Array.isArray(state.playingIds) ? state.playingIds.length : 0;
+  const sets = state.schedule && state.schedule.rounds ? state.schedule.rounds.length : 0;
+  return players === 0 && sets === 0;
+}
+
+function isExpiredSession(state, now, todayIso) {
+  const touched = sessionLastTouched(state);
+  // No timestamp at all means it predates v0.51.0 and hasn't been touched since.
+  const idleFor = touched === null ? Infinity : (now || Date.now()) - touched;
+  if (idleFor < SESSION_RETENTION_MS) return false;
+  const date = state && state.sessionDate ? state.sessionDate : null;
+  if (date && date >= (todayIso || todayISO())) return false; // its day hasn't come yet
+  return true;
+}
+
+function freshnessLabel(state, now) {
+  const touched = sessionLastTouched(state);
+  if (touched === null) return 'no recent activity';
+  const mins = Math.round(((now || Date.now()) - touched) / 60000);
+  if (mins < 2) return 'updated just now';
+  if (mins < 60) return `updated ${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `updated ${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `updated ${days}d ago`;
+}
+
 function isSessionKey(key) {
   return typeof key === 'string' && key.startsWith(SESSION_KEY_PREFIX) && key.length > SESSION_KEY_PREFIX.length;
 }
@@ -1679,17 +1734,36 @@ export default function TennisPairingApp() {
     try {
       const res = await window.storage.list(SESSION_KEY_PREFIX, true);
       const keys = (res && res.keys ? res.keys : []).filter((k) => isSessionKey(k) && k !== WEEKLY_KEY);
+      const now = Date.now();
+      const today = todayISO();
       const found = [];
+      const expired = [];
       for (const k of keys) {
         try {
           const r = await window.storage.get(k, true);
-          if (r && r.value) found.push({ key: k, state: JSON.parse(r.value) });
+          if (!r || !r.value) continue;
+          const state = JSON.parse(r.value);
+          if (isExpiredSession(state, now, today)) { expired.push(k); continue; }
+          // Nothing marked in and nothing generated - there is nothing to copy, so it
+          // isn't offered. It still ages out on the ordinary schedule.
+          if (isEmptySession(state)) continue;
+          found.push({ key: k, state });
         } catch {
           // One unreadable session shouldn't hide the rest.
         }
       }
       found.sort((a, b) => ((b.state && b.state.updatedAt) || 0) - ((a.state && a.state.updatedAt) || 0));
       setOtherSessions(found);
+
+      // Delete a few of the expired ones on the way past. Capped so this stays a
+      // trickle, and failures are ignored - another browser will get to it later.
+      for (const k of expired.slice(0, MAX_DELETES_PER_LOAD)) {
+        try {
+          await window.storage.delete(k, true);
+        } catch {
+          // Never let cleanup interfere with the session list itself.
+        }
+      }
     } catch {
       setOtherSessions([]);
     }
@@ -2609,11 +2683,15 @@ export default function TennisPairingApp() {
                       <div className="text-xs" style={{ color: 'var(--muted)' }}>
                         Each browser keeps its own sheet, so these belong to other people or to your
                         own other devices. Taking a copy brings one into this browser to work on —
-                        it never changes theirs.
+                        it never changes theirs. Empty sheets aren't listed, since there'd be
+                        nothing to copy.
                       </div>
                       {otherSessions.map((entry) => (
                         <div key={entry.key} className="flex items-center gap-2">
-                          <span className="flex-1 text-xs">{describeSession(entry.state)}</span>
+                          <span className="flex-1 text-xs">
+                            {describeSession(entry.state)}
+                            <span className="block" style={{ color: 'var(--muted)' }}>{freshnessLabel(entry.state)}</span>
+                          </span>
                           <button
                             type="button"
                             onClick={() => adoptSessionCopy(entry)}
@@ -2626,6 +2704,11 @@ export default function TennisPairingApp() {
                       ))}
                       <div className="text-xs" style={{ color: 'var(--clay)' }}>
                         Taking a copy replaces what's currently on this browser's sheet.
+                      </div>
+                      <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                        Sheets clear themselves once they've sat untouched for 8 days and their
+                        date has passed. Anything dated today or later stays, however long it's
+                        been. Match history is kept separately and is never affected.
                       </div>
                     </div>
                   )}
