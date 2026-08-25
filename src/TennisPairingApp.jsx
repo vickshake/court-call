@@ -481,6 +481,34 @@ const HEADER_MAP = {
   preferredcourt: 'preferredCourt', courtpreference: 'preferredCourt',
 };
 
+// Applies an imported row onto an existing player WITHOUT flattening anything the
+// spreadsheet didn't carry. Only fields the sheet actually supplied are taken; every
+// other value on the existing record survives untouched.
+//
+// This exists because the previous behaviour replaced the whole record, so importing
+// a name-and-rating sheet silently reset competitive ratings, injuries, comments and
+// court preferences to defaults. Directory data is hand-entered and effectively
+// irreplaceable, so the safe direction is always to keep what's already there.
+const IMPORTABLE_FIELDS = [
+  'name', 'sex', 'usta', 'cta', 'birthYear', 'handedness',
+  'competitive', 'serving', 'injuries', 'comments', 'preferredCourt',
+];
+
+function mergeImportedPlayer(existing, incoming) {
+  const provided = incoming.__provided instanceof Set ? incoming.__provided : new Set();
+  const merged = { ...existing };
+  IMPORTABLE_FIELDS.forEach((field) => {
+    // 'age' in the sheet becomes birthYear on the record - check the source name too.
+    const supplied = provided.has(field) || (field === 'birthYear' && provided.has('age'));
+    if (supplied) merged[field] = incoming[field];
+  });
+  // Never carried over from a file: the internal id, and the active flag (the sheet's
+  // own availability column is a stale snapshot, which is why import never sets it).
+  merged.id = existing.id;
+  merged.active = existing.active;
+  return merged;
+}
+
 function rowsToDirectory(rows, referenceYear) {
   const keys = Object.keys(rows[0] || {});
   const keyToField = {};
@@ -494,9 +522,15 @@ function rowsToDirectory(rows, referenceYear) {
     .filter((r) => nameKey && r[nameKey] != null && String(r[nameKey]).trim() !== '')
     .map((r) => {
       const out = {};
+      // Which fields this row genuinely supplied - a column that exists AND has a value.
+      // A blank cell means "nothing to say about this", never "erase what's on record",
+      // which is the distinction that stops an import wiping hand-entered detail.
+      const provided = new Set();
       keys.forEach((k) => {
         const field = keyToField[k];
-        if (field) out[field] = r[k];
+        if (!field) return;
+        out[field] = r[k];
+        if (r[k] !== null && r[k] !== undefined && String(r[k]).trim() !== '') provided.add(field);
       });
 
       const age = out.age != null && out.age !== '' ? Number(out.age) : null;
@@ -527,6 +561,7 @@ function rowsToDirectory(rows, referenceYear) {
       })();
 
       return {
+        __provided: provided,
         id: uid(),
         name: String(out.name).trim(),
         sex,
@@ -898,6 +933,10 @@ const HISTORY_KEY = 'match-history';
 const PIN_KEY = 'directory-pin';
 const ADMIN_REGISTRY_KEY = 'admin-registry';
 const AUDIT_LOG_KEY = 'audit-log';
+// A copy of the directory taken immediately before anything that rewrites it wholesale.
+// Directory data is hand-entered and effectively irreplaceable, so a bad import should
+// always be undoable rather than something to repopulate by hand.
+const DIRECTORY_BACKUP_KEY = 'player-directory-backup';
 const DEFAULT_PIN = '1234';
 // Set explicitly by the standalone build's entry point (main.jsx). Inside a Claude artifact
 // this stays false, since that's the only environment where the AI-extraction call below
@@ -1290,6 +1329,8 @@ export default function TennisPairingApp() {
   const [importYear, setImportYear] = useState(String(THIS_YEAR));
   const [importStatus, setImportStatus] = useState('');
   const [pendingImport, setPendingImport] = useState(null);
+  const [directoryBackup, setDirectoryBackup] = useState(null);
+  const [restoreConfirm, setRestoreConfirm] = useState(false);
   const [lockCountdown, setLockCountdown] = useState(null); // seconds left before an idle lock, or null
   const [lockNotice, setLockNotice] = useState('');
   const [otherSessions, setOtherSessions] = useState([]);
@@ -1561,6 +1602,13 @@ export default function TennisPairingApp() {
       } catch (e) {
         console.error('registry migration save failed', e);
       }
+    }
+
+    try {
+      const backupRes = await window.storage.get(DIRECTORY_BACKUP_KEY, true);
+      if (backupRes && backupRes.value) setDirectoryBackup(JSON.parse(backupRes.value));
+    } catch {
+      // No snapshot yet, or unreadable - the restore option simply isn't offered.
     }
 
     if (auditResult.status === 'fulfilled' && auditResult.value && auditResult.value.value) {
@@ -2314,6 +2362,39 @@ export default function TennisPairingApp() {
     setCopyStatus('fallback');
   }
 
+  // Written and confirmed BEFORE the directory is touched. If this can't be saved the
+  // import doesn't proceed - going ahead without a way back is exactly the situation
+  // this is here to prevent.
+  async function snapshotDirectory(reason) {
+    const payload = {
+      takenAt: Date.now(),
+      reason: reason || 'import',
+      count: directory.length,
+      players: directory,
+    };
+    await window.storage.set(DIRECTORY_BACKUP_KEY, JSON.stringify(payload), true);
+    setDirectoryBackup(payload);
+  }
+
+  async function restoreDirectoryBackup() {
+    if (!directoryBackup || !Array.isArray(directoryBackup.players)) return;
+    // Snapshot the current state first, so restoring is itself undoable.
+    try {
+      await window.storage.set(DIRECTORY_BACKUP_KEY, JSON.stringify({
+        takenAt: Date.now(), reason: 'restore', count: directory.length, players: directory,
+      }), true);
+    } catch {
+      // If this fails the restore still proceeds - the user explicitly asked for it.
+    }
+    const ok = await persistDirectory(directoryBackup.players);
+    if (ok) {
+      logAudit(currentAdminName || 'Admin', 'directory.restore',
+        `Restored ${directoryBackup.players.length} players from the ${new Date(directoryBackup.takenAt).toLocaleString('en-US')} snapshot`);
+      setImportStatus(`Restored ${directoryBackup.players.length} players from the earlier snapshot.`);
+    }
+    setRestoreConfirm(false);
+  }
+
   async function handleFileSelected(e) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -2331,6 +2412,17 @@ export default function TennisPairingApp() {
         return;
       }
 
+      // Nothing touches the directory until a restorable copy is safely stored.
+      if (directory.length > 0) {
+        try {
+          await snapshotDirectory('import');
+        } catch (err) {
+          console.error('pre-import snapshot failed', err);
+          setImportStatus("Stopped: couldn't save a backup of your current directory first, so nothing was changed. Check your connection and try again.");
+          return;
+        }
+      }
+
       const incomingNames = new Set(incoming.map((inc) => inc.name.trim().toLowerCase()));
       let added = 0;
       let updated = 0;
@@ -2339,10 +2431,11 @@ export default function TennisPairingApp() {
         const key = inc.name.trim().toLowerCase();
         const existingIdx = merged.findIndex((p) => p.name.trim().toLowerCase() === key);
         if (existingIdx >= 0) {
-          merged[existingIdx] = { ...inc, id: merged[existingIdx].id };
+          merged[existingIdx] = mergeImportedPlayer(merged[existingIdx], inc);
           updated += 1;
         } else {
-          merged.push(inc);
+          const { __provided, ...clean } = inc;
+          merged.push(clean);
           added += 1;
         }
       });
@@ -3405,6 +3498,38 @@ export default function TennisPairingApp() {
                   className="tp-focus tp-input w-20 px-2 py-1 text-sm"
                 />
               </div>
+              {directoryBackup && Array.isArray(directoryBackup.players) && (
+                <div className="tp-card p-3 space-y-2">
+                  <div className="text-xs font-semibold">Directory snapshot</div>
+                  <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                    {directoryBackup.players.length} player{directoryBackup.players.length === 1 ? '' : 's'},
+                    saved {new Date(directoryBackup.takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                    {directoryBackup.reason === 'import' ? ' — just before the last import.' : '.'}
+                    {' '}Taken automatically so an import is always undoable.
+                  </div>
+                  {!restoreConfirm ? (
+                    <button type="button" onClick={() => setRestoreConfirm(true)} className="tp-focus tp-input text-xs px-3 py-1.5" style={{ color: 'var(--clay)' }}>
+                      Restore this snapshot…
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-xs" style={{ color: 'var(--clay)' }}>
+                        This replaces the current directory with the {directoryBackup.players.length}-player
+                        snapshot. Your current list is saved as a new snapshot first, so this is reversible too.
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={restoreDirectoryBackup} className="flex-1 px-3 py-1.5 rounded-md font-semibold text-xs" style={{ background: 'var(--clay)', color: '#fff' }}>
+                          Restore
+                        </button>
+                        <button type="button" onClick={() => setRestoreConfirm(false)} className="tp-btn-secondary flex-1 px-3 py-1.5 text-xs">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {importStatus && (
                 <div className="text-xs flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
                   {importStatus === 'Reading file and saving…' && <Loader2 size={12} className="animate-spin" />}
@@ -3539,6 +3664,11 @@ export default function TennisPairingApp() {
                           <span className="text-xs px-2 py-1 rounded-md font-medium whitespace-nowrap" style={{ background: '#F1F1EE', color: 'var(--muted)' }}>
                             {effSkill(p).toFixed(1)} {hasUsta(p) ? 'USTA' : 'CTA'}
                           </span>
+                          {hasUsta(p) && p.cta != null && (
+                            <span className="text-xs px-2 py-1 rounded-md whitespace-nowrap" style={{ background: '#F1F1EE', color: 'var(--muted)', opacity: 0.75 }}>
+                              {Number(p.cta).toFixed(1)} CTA
+                            </span>
+                          )}
                           <button type="button" onClick={() => startEdit(p)} className="tp-focus" style={{ color: 'var(--muted)' }} aria-label={`Edit ${p.name}`}>
                             <Pencil size={14} />
                           </button>
