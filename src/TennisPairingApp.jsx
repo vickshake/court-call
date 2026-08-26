@@ -481,32 +481,80 @@ const HEADER_MAP = {
   preferredcourt: 'preferredCourt', courtpreference: 'preferredCourt',
 };
 
-// Applies an imported row onto an existing player WITHOUT flattening anything the
-// spreadsheet didn't carry. Only fields the sheet actually supplied are taken; every
-// other value on the existing record survives untouched.
-//
-// This exists because the previous behaviour replaced the whole record, so importing
-// a name-and-rating sheet silently reset competitive ratings, injuries, comments and
-// court preferences to defaults. Directory data is hand-entered and effectively
-// irreplaceable, so the safe direction is always to keep what's already there.
+const FIELD_LABELS = {
+  name: 'Name', sex: 'Sex', usta: 'USTA rating', cta: 'CTA rating',
+  birthYear: 'Birth year', handedness: 'Handedness', competitive: 'Competitive',
+  serving: 'Serving', injuries: 'Injuries', comments: 'Comments',
+  preferredCourt: 'Preferred court',
+};
+
+// Renders a stored value the way the organizer would recognise it on screen, so the
+// review reads as "Court 2 -> Court 5" rather than raw field values.
+function displayValue(field, v) {
+  if (v === null || v === undefined || v === '') return 'blank';
+  if (field === 'preferredCourt') return `Court ${v}`;
+  if (field === 'usta' || field === 'cta') return Number(v).toFixed(1);
+  if (field === 'handedness') return v === 'L' ? 'Lefty' : 'Righty';
+  return String(v);
+}
+
+// Fields an import is ever allowed to touch. The internal id and the active flag are
+// deliberately absent: the id must stay stable or match history loses its link to the
+// player, and the sheet's availability column is a stale snapshot.
 const IMPORTABLE_FIELDS = [
   'name', 'sex', 'usta', 'cta', 'birthYear', 'handedness',
   'competitive', 'serving', 'injuries', 'comments', 'preferredCourt',
 ];
 
-function mergeImportedPlayer(existing, incoming) {
-  const provided = incoming.__provided instanceof Set ? incoming.__provided : new Set();
-  const merged = { ...existing };
-  IMPORTABLE_FIELDS.forEach((field) => {
-    // 'age' in the sheet becomes birthYear on the record - check the source name too.
-    const supplied = provided.has(field) || (field === 'birthYear' && provided.has('age'));
-    if (supplied) merged[field] = incoming[field];
+function buildImportPlan(directory, incoming) {
+  const updates = [];
+  const additions = [];
+  const byName = new Map(directory.map((p) => [p.name.trim().toLowerCase(), p]));
+
+  incoming.forEach((inc) => {
+    const existing = byName.get(inc.name.trim().toLowerCase());
+    if (!existing) {
+      const { __provided, ...clean } = inc;
+      additions.push(clean);
+      return;
+    }
+    const provided = inc.__provided instanceof Set ? inc.__provided : new Set();
+    const changes = [];
+    IMPORTABLE_FIELDS.forEach((field) => {
+      const supplied = provided.has(field) || (field === 'birthYear' && provided.has('age'));
+      if (!supplied) return;
+      const from = existing[field];
+      const to = inc[field];
+      const same = (from === to)
+        || (from == null && to == null)
+        || (String(from == null ? '' : from) === String(to == null ? '' : to));
+      if (!same) changes.push({ field, label: FIELD_LABELS[field] || field, from, to });
+    });
+    if (changes.length > 0) updates.push({ id: existing.id, name: existing.name, changes });
   });
-  // Never carried over from a file: the internal id, and the active flag (the sheet's
-  // own availability column is a stale snapshot, which is why import never sets it).
-  merged.id = existing.id;
-  merged.active = existing.active;
-  return merged;
+
+  const incomingNames = new Set(incoming.map((i) => i.name.trim().toLowerCase()));
+  const missing = directory.filter((p) => !incomingNames.has(p.name.trim().toLowerCase()));
+  return { updates, additions, missing, unchanged: incoming.length - updates.length - additions.length };
+}
+
+// Applies a reviewed plan. skipIds are players the organizer chose to leave alone,
+// so their existing values are kept exactly as they are.
+function applyImportPlan(directory, plan, skipIds, removeMissing) {
+  const skip = skipIds instanceof Set ? skipIds : new Set(skipIds || []);
+  const changeById = new Map(plan.updates.map((u) => [u.id, u]));
+  let next = directory.map((p) => {
+    const upd = changeById.get(p.id);
+    if (!upd || skip.has(p.id)) return p;
+    const merged = { ...p };
+    upd.changes.forEach((c) => { merged[c.field] = c.to; });
+    return merged;
+  });
+  if (removeMissing) {
+    const missingIds = new Set(plan.missing.map((p) => p.id));
+    next = next.filter((p) => !missingIds.has(p.id));
+  }
+  return [...next, ...plan.additions];
 }
 
 function rowsToDirectory(rows, referenceYear) {
@@ -937,6 +985,18 @@ const AUDIT_LOG_KEY = 'audit-log';
 // Directory data is hand-entered and effectively irreplaceable, so a bad import should
 // always be undoable rather than something to repopulate by hand.
 const DIRECTORY_BACKUP_KEY = 'player-directory-backup';
+// Kept as a short history, not one slot. A single slot meant a second import silently
+// destroyed the only copy of the state before the first - the exact failure a backup
+// exists to prevent.
+const MAX_SNAPSHOTS = 10;
+
+// Reads either shape: the original single-object backup, or the list that replaced it.
+function normalizeSnapshots(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (raw.players) return [raw]; // pre-v0.57.0 single snapshot
+  return [];
+}
 const DEFAULT_PIN = '1234';
 // Set explicitly by the standalone build's entry point (main.jsx). Inside a Claude artifact
 // this stays false, since that's the only environment where the AI-extraction call below
@@ -1329,8 +1389,10 @@ export default function TennisPairingApp() {
   const [importYear, setImportYear] = useState(String(THIS_YEAR));
   const [importStatus, setImportStatus] = useState('');
   const [pendingImport, setPendingImport] = useState(null);
-  const [directoryBackup, setDirectoryBackup] = useState(null);
-  const [restoreConfirm, setRestoreConfirm] = useState(false);
+  const [snapshots, setSnapshots] = useState([]);
+  const [restoreConfirmId, setRestoreConfirmId] = useState(null);
+  const [exportPrompt, setExportPrompt] = useState(false);
+  const [importSkipIds, setImportSkipIds] = useState(new Set());
   const [lockCountdown, setLockCountdown] = useState(null); // seconds left before an idle lock, or null
   const [lockNotice, setLockNotice] = useState('');
   const [otherSessions, setOtherSessions] = useState([]);
@@ -1606,7 +1668,7 @@ export default function TennisPairingApp() {
 
     try {
       const backupRes = await window.storage.get(DIRECTORY_BACKUP_KEY, true);
-      if (backupRes && backupRes.value) setDirectoryBackup(JSON.parse(backupRes.value));
+      if (backupRes && backupRes.value) setSnapshots(normalizeSnapshots(JSON.parse(backupRes.value)));
     } catch {
       // No snapshot yet, or unreadable - the restore option simply isn't offered.
     }
@@ -2363,36 +2425,38 @@ export default function TennisPairingApp() {
   }
 
   // Written and confirmed BEFORE the directory is touched. If this can't be saved the
-  // import doesn't proceed - going ahead without a way back is exactly the situation
-  // this is here to prevent.
+  // caller doesn't proceed - going ahead with no way back is what this prevents.
   async function snapshotDirectory(reason) {
-    const payload = {
+    const entry = {
+      id: uid(),
       takenAt: Date.now(),
       reason: reason || 'import',
+      by: currentAdminName || 'Admin',
       count: directory.length,
       players: directory,
     };
-    await window.storage.set(DIRECTORY_BACKUP_KEY, JSON.stringify(payload), true);
-    setDirectoryBackup(payload);
+    const next = [entry, ...snapshots].slice(0, MAX_SNAPSHOTS);
+    await window.storage.set(DIRECTORY_BACKUP_KEY, JSON.stringify(next), true);
+    setSnapshots(next);
+    return entry;
   }
 
-  async function restoreDirectoryBackup() {
-    if (!directoryBackup || !Array.isArray(directoryBackup.players)) return;
-    // Snapshot the current state first, so restoring is itself undoable.
+  async function restoreSnapshot(id) {
+    const snap = snapshots.find((x) => x.id === id);
+    if (!snap || !Array.isArray(snap.players)) return;
+    // Restoring is itself snapshotted, so it can be undone too.
     try {
-      await window.storage.set(DIRECTORY_BACKUP_KEY, JSON.stringify({
-        takenAt: Date.now(), reason: 'restore', count: directory.length, players: directory,
-      }), true);
+      await snapshotDirectory('before restore');
     } catch {
-      // If this fails the restore still proceeds - the user explicitly asked for it.
+      // Proceed anyway - the organizer explicitly asked for this.
     }
-    const ok = await persistDirectory(directoryBackup.players);
+    const ok = await persistDirectory(snap.players);
     if (ok) {
       logAudit(currentAdminName || 'Admin', 'directory.restore',
-        `Restored ${directoryBackup.players.length} players from the ${new Date(directoryBackup.takenAt).toLocaleString('en-US')} snapshot`);
-      setImportStatus(`Restored ${directoryBackup.players.length} players from the earlier snapshot.`);
+        `Restored ${snap.players.length} players from the ${new Date(snap.takenAt).toLocaleString('en-US')} snapshot`);
+      setImportStatus(`Restored ${snap.players.length} players from the ${new Date(snap.takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} snapshot.`);
     }
-    setRestoreConfirm(false);
+    setRestoreConfirmId(null);
   }
 
   async function handleFileSelected(e) {
@@ -2412,44 +2476,13 @@ export default function TennisPairingApp() {
         return;
       }
 
-      // Nothing touches the directory until a restorable copy is safely stored.
-      if (directory.length > 0) {
-        try {
-          await snapshotDirectory('import');
-        } catch (err) {
-          console.error('pre-import snapshot failed', err);
-          setImportStatus("Stopped: couldn't save a backup of your current directory first, so nothing was changed. Check your connection and try again.");
-          return;
-        }
-      }
-
-      const incomingNames = new Set(incoming.map((inc) => inc.name.trim().toLowerCase()));
-      let added = 0;
-      let updated = 0;
-      const merged = [...directory];
-      incoming.forEach((inc) => {
-        const key = inc.name.trim().toLowerCase();
-        const existingIdx = merged.findIndex((p) => p.name.trim().toLowerCase() === key);
-        if (existingIdx >= 0) {
-          merged[existingIdx] = mergeImportedPlayer(merged[existingIdx], inc);
-          updated += 1;
-        } else {
-          const { __provided, ...clean } = inc;
-          merged.push(clean);
-          added += 1;
-        }
-      });
-      const missing = directory.filter((p) => !incomingNames.has(p.name.trim().toLowerCase()));
-
-      if (missing.length === 0) {
-        const ok = await persistDirectory(merged);
-        setImportStatus(ok
-          ? `Imported: ${added} added, ${updated} matched to existing names and updated.`
-          : "That didn't save — check your connection and try importing again.");
-      } else {
-        setPendingImport({ merged, missing, added, updated });
+      // Nothing is written yet. The plan is shown for review first - a mass import is
+      // the one place where a stale spreadsheet can quietly roll back hand-entered work,
+      // so every field it would change is put in front of the organizer beforehand.
+      const plan = buildImportPlan(directory, incoming);
+      setPendingImport({ plan, sheetName });
+      setImportSkipIds(new Set());
         setImportStatus('');
-      }
     } catch (err) {
       console.error(err);
       setImportStatus('Could not read that file. Make sure it is a .xlsx or .csv export.');
@@ -2458,24 +2491,88 @@ export default function TennisPairingApp() {
     }
   }
 
-  async function resolveImportRemove() {
-    if (!pendingImport) return;
-    const missingIds = new Set(pendingImport.missing.map((p) => p.id));
-    const final = pendingImport.merged.filter((p) => !missingIds.has(p.id));
-    const ok = await persistDirectory(final);
-    setImportStatus(ok
-      ? `Imported: ${pendingImport.added} added, ${pendingImport.updated} updated, ${pendingImport.missing.length} removed to match the file.`
-      : "That didn't save — check your connection and try again.");
+  async function applyReviewedImport(removeMissing) {
+    if (!pendingImport || !pendingImport.plan) return;
+    const plan = pendingImport.plan;
+
+    // The restorable copy is written and confirmed before anything changes.
+    if (directory.length > 0) {
+      try {
+        await snapshotDirectory('import');
+      } catch (err) {
+        console.error('pre-import snapshot failed', err);
+        setImportStatus("Stopped: couldn't save a backup of your current directory first, so nothing was changed. Check your connection and try again.");
+        return;
+      }
+    }
+
+    const next = applyImportPlan(directory, plan, importSkipIds, removeMissing);
+    const appliedUpdates = plan.updates.filter((u) => !importSkipIds.has(u.id)).length;
+    const skipped = plan.updates.length - appliedUpdates;
+    const ok = await persistDirectory(next);
+    if (ok) {
+      logAudit(currentAdminName || 'Admin', 'directory.import',
+        `Imported: ${plan.additions.length} added, ${appliedUpdates} updated${skipped ? `, ${skipped} left unchanged` : ''}${removeMissing ? `, ${plan.missing.length} removed` : ''}`);
+      setImportStatus(`Imported: ${plan.additions.length} added, ${appliedUpdates} updated${skipped ? `, ${skipped} left unchanged` : ''}${removeMissing ? `, ${plan.missing.length} removed` : ''}.`);
+    } else {
+      setImportStatus("That didn't save — check your connection and try again.");
+    }
     setPendingImport(null);
+    setImportSkipIds(new Set());
   }
 
-  async function resolveImportKeep() {
-    if (!pendingImport) return;
-    const ok = await persistDirectory(pendingImport.merged);
-    setImportStatus(ok
-      ? `Imported: ${pendingImport.added} added, ${pendingImport.updated} updated. Kept ${pendingImport.missing.length} not in the file.`
-      : "That didn't save — check your connection and try again.");
+  function cancelImport() {
     setPendingImport(null);
+    setImportSkipIds(new Set());
+    setImportStatus('Import cancelled — nothing was changed.');
+  }
+
+  function toggleImportSkip(id) {
+    setImportSkipIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // Everything the app owns, in one file. Deliberately raw JSON rather than a
+  // spreadsheet: this is for rebuilding from nothing, not for reading.
+  async function handleDownloadEverything() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      appVersion: typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : 'unknown',
+      note: 'Court Call full export. Directory and match history are the irreplaceable parts.',
+      data: {},
+    };
+    try {
+      const listed = await window.storage.list('', true);
+      const keys = (listed && listed.keys ? listed.keys : []);
+      for (const k of keys) {
+        try {
+          const r = await window.storage.get(k, true);
+          if (r && r.value) payload.data[k] = r.value;
+        } catch {
+          payload.data[k] = null; // record that it existed but couldn't be read
+        }
+      }
+    } catch {
+      setImportStatus("Couldn't read everything for the download — check your connection.");
+      return;
+    }
+    try {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `court-call-full-backup-${todayISO()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      logAudit(currentAdminName || 'Superuser', 'data.export_all', `Downloaded a full backup (${Object.keys(payload.data).length} records)`);
+    } catch (e) {
+      console.error('download failed', e);
+    }
   }
 
   function handleExport() {
@@ -3448,6 +3545,73 @@ export default function TennisPairingApp() {
               </div>
 
               <div>
+                <div className="text-sm font-semibold mb-2">Backup &amp; restore</div>
+                <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
+                  Snapshots are taken automatically before anything that rewrites the directory in
+                  bulk. They live in the same database as the data itself, so the download below is
+                  the copy that would survive losing the database entirely.
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadEverything}
+                  className="tp-btn-primary tp-focus w-full py-2 text-xs flex items-center justify-center gap-1.5 mb-2"
+                >
+                  <Download size={13} />
+                  Download everything as a file
+                </button>
+                <div className="text-xs mb-3" style={{ color: 'var(--muted)' }}>
+                  Directory, match history, admin registry and usage data in one timestamped file.
+                  Keep it somewhere outside this app — Drive, email, anywhere off the database.
+                </div>
+
+                <div className="text-xs font-semibold mb-1.5">Directory snapshots</div>
+                {snapshots.length === 0 ? (
+                  <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                    None yet — one is taken automatically before the next import.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {snapshots.map((snap) => (
+                      <div key={snap.id} className="tp-card px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="flex-1 text-xs">
+                            <span className="font-semibold">{snap.count} player{snap.count === 1 ? '' : 's'}</span>
+                            <span style={{ color: 'var(--muted)' }}>
+                              {' · '}{new Date(snap.takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                              {' · '}{snap.reason}{snap.by ? ` · ${snap.by}` : ''}
+                            </span>
+                          </span>
+                          {restoreConfirmId !== snap.id && (
+                            <button type="button" onClick={() => setRestoreConfirmId(snap.id)} className="tp-focus text-xs shrink-0" style={{ color: 'var(--clay)' }}>
+                              Restore
+                            </button>
+                          )}
+                        </div>
+                        {restoreConfirmId === snap.id && (
+                          <div className="mt-2 space-y-1.5">
+                            <div className="text-xs" style={{ color: 'var(--clay)' }}>
+                              Replace the current {directory.length}-player directory with this
+                              {' '}{snap.count}-player snapshot? The current list is snapshotted first,
+                              so this is reversible.
+                            </div>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={() => restoreSnapshot(snap.id)} className="flex-1 px-3 py-1.5 rounded-md font-semibold text-xs" style={{ background: 'var(--clay)', color: '#fff' }}>
+                                Restore this one
+                              </button>
+                              <button type="button" onClick={() => setRestoreConfirmId(null)} className="tp-btn-secondary flex-1 px-3 py-1.5 text-xs">
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
                 <div className="text-sm font-semibold mb-2">Activity log</div>
                 {auditLog.length === 0 ? (
                   <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Nothing logged yet.</div>
@@ -3476,7 +3640,7 @@ export default function TennisPairingApp() {
                   <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
                   Refresh
                 </button>
-                <button type="button" onClick={() => fileInputRef.current && fileInputRef.current.click()} className="tp-focus tp-input flex items-center gap-1.5 text-sm px-3 py-1.5" style={{ color: 'var(--court)' }}>
+                <button type="button" onClick={() => (directory.length > 0 ? setExportPrompt(true) : fileInputRef.current && fileInputRef.current.click())} className="tp-focus tp-input flex items-center gap-1.5 text-sm px-3 py-1.5" style={{ color: 'var(--court)' }}>
                   <Upload size={14} />
                   Import
                 </button>
@@ -3498,35 +3662,42 @@ export default function TennisPairingApp() {
                   className="tp-focus tp-input w-20 px-2 py-1 text-sm"
                 />
               </div>
-              {directoryBackup && Array.isArray(directoryBackup.players) && (
-                <div className="tp-card p-3 space-y-2">
-                  <div className="text-xs font-semibold">Directory snapshot</div>
+              {exportPrompt && (
+                <div className="tp-card p-3 space-y-2" style={{ borderColor: 'var(--warn)', borderWidth: '2px' }}>
+                  <div className="text-sm font-semibold" style={{ color: 'var(--warn)' }}>Save a copy first?</div>
                   <div className="text-xs" style={{ color: 'var(--muted)' }}>
-                    {directoryBackup.players.length} player{directoryBackup.players.length === 1 ? '' : 's'},
-                    saved {new Date(directoryBackup.takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                    {directoryBackup.reason === 'import' ? ' — just before the last import.' : '.'}
-                    {' '}Taken automatically so an import is always undoable.
+                    The app keeps its own snapshots, but those live in the same database as the
+                    directory itself. A downloaded spreadsheet is the one copy that survives
+                    anything happening to the database — worth thirty seconds before a bulk import.
                   </div>
-                  {!restoreConfirm ? (
-                    <button type="button" onClick={() => setRestoreConfirm(true)} className="tp-focus tp-input text-xs px-3 py-1.5" style={{ color: 'var(--clay)' }}>
-                      Restore this snapshot…
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => { handleExport(); setExportPrompt(false); if (fileInputRef.current) fileInputRef.current.click(); }}
+                      className="tp-btn-primary tp-focus flex-1 py-2 text-xs"
+                    >
+                      Download a copy, then import
                     </button>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="text-xs" style={{ color: 'var(--clay)' }}>
-                        This replaces the current directory with the {directoryBackup.players.length}-player
-                        snapshot. Your current list is saved as a new snapshot first, so this is reversible too.
-                      </div>
-                      <div className="flex gap-2">
-                        <button type="button" onClick={restoreDirectoryBackup} className="flex-1 px-3 py-1.5 rounded-md font-semibold text-xs" style={{ background: 'var(--clay)', color: '#fff' }}>
-                          Restore
-                        </button>
-                        <button type="button" onClick={() => setRestoreConfirm(false)} className="tp-btn-secondary flex-1 px-3 py-1.5 text-xs">
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => { setExportPrompt(false); if (fileInputRef.current) fileInputRef.current.click(); }}
+                      className="tp-btn-secondary tp-focus flex-1 py-2 text-xs"
+                    >
+                      Skip, I already have one
+                    </button>
+                    <button type="button" onClick={() => setExportPrompt(false)} className="tp-focus px-3 py-2 text-xs" style={{ color: 'var(--muted)' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {snapshots.length > 0 && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                  {snapshots.length} snapshot{snapshots.length === 1 ? '' : 's'} saved — most recent{' '}
+                  {new Date(snapshots[0].takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  {' '}({snapshots[0].count} player{snapshots[0].count === 1 ? '' : 's'}, {snapshots[0].reason}).
+                  Restore from the Superuser console.
                 </div>
               )}
 
@@ -3537,27 +3708,126 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
-              {pendingImport && (
-                <div className="tp-card p-3 space-y-2">
-                  <div className="text-xs font-semibold">
-                    {pendingImport.missing.length} {pendingImport.missing.length === 1 ? 'person is' : 'people are'} in your directory but not in this file:
+              {pendingImport && pendingImport.plan && (() => {
+                const plan = pendingImport.plan;
+                const nothingToDo = plan.updates.length === 0 && plan.additions.length === 0 && plan.missing.length === 0;
+                return (
+                  <div className="tp-card p-3 space-y-3" style={{ borderColor: 'var(--court)', borderWidth: '2px' }}>
+                    <div className="text-sm font-semibold">Review this import</div>
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                      Read from the &ldquo;{pendingImport.sheetName}&rdquo; tab. Nothing has been changed yet —
+                      everything below is what <em>would</em> change if you go ahead. Anything the file
+                      doesn&apos;t mention is left exactly as it is.
+                    </div>
+
+                    {nothingToDo && (
+                      <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                        Nothing to change — the file matches what&apos;s already in the directory.
+                      </div>
+                    )}
+
+                    {plan.updates.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold" style={{ color: 'var(--clay)' }}>
+                          {plan.updates.length} existing {plan.updates.length === 1 ? 'player' : 'players'} would change
+                        </div>
+                        <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                          Untick anyone you&apos;d rather leave as they are — useful when the sheet is
+                          older than an edit you made here.
+                        </div>
+                        {plan.updates.map((u) => {
+                          const skipped = importSkipIds.has(u.id);
+                          return (
+                            <div key={u.id} className="tp-card px-3 py-2" style={{ opacity: skipped ? 0.5 : 1 }}>
+                              <button
+                                type="button"
+                                onClick={() => toggleImportSkip(u.id)}
+                                className="tp-focus w-full flex items-center gap-2 text-left"
+                              >
+                                <span className="flex items-center justify-center shrink-0" style={{
+                                  width: 16, height: 16, borderRadius: 5,
+                                  border: skipped ? '2px solid var(--line)' : 'none',
+                                  background: skipped ? 'transparent' : 'var(--court)',
+                                }}>
+                                  {!skipped && <Check size={11} color="#fff" />}
+                                </span>
+                                <span className="text-xs font-semibold flex-1">{u.name}</span>
+                                <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                                  {skipped ? 'leave unchanged' : `${u.changes.length} field${u.changes.length === 1 ? '' : 's'}`}
+                                </span>
+                              </button>
+                              <div className="mt-1.5 pl-6 space-y-0.5">
+                                {u.changes.map((c) => (
+                                  <div key={c.field} className="text-xs flex items-baseline gap-1.5 flex-wrap">
+                                    <span style={{ color: 'var(--muted)' }}>{c.label}:</span>
+                                    <span style={{ color: 'var(--muted)', textDecoration: 'line-through' }}>{displayValue(c.field, c.from)}</span>
+                                    <span style={{ color: 'var(--muted)' }}>&rarr;</span>
+                                    <span className="font-semibold" style={{ color: 'var(--clay)' }}>{displayValue(c.field, c.to)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {plan.additions.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold" style={{ color: 'var(--court)' }}>
+                          {plan.additions.length} new {plan.additions.length === 1 ? 'player' : 'players'} would be added
+                        </div>
+                        <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                          {plan.additions.map((p) => p.name).join(', ')}
+                        </div>
+                      </div>
+                    )}
+
+                    {plan.unchanged > 0 && (
+                      <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                        {plan.unchanged} {plan.unchanged === 1 ? 'row matches' : 'rows match'} what&apos;s already
+                        on record and would change nothing.
+                      </div>
+                    )}
+
+                    {plan.missing.length > 0 && (
+                      <div className="tp-card px-3 py-2">
+                        <div className="text-xs font-semibold">
+                          {plan.missing.length} {plan.missing.length === 1 ? 'person is' : 'people are'} in the
+                          directory but not in this file
+                        </div>
+                        <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                          {plan.missing.map((p) => p.name).join(', ')}
+                        </div>
+                        <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                          Keeping them is the safe choice. Removing them also removes their notes and
+                          ratings — their match history stays either way.
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                      A snapshot of the current directory is saved first, so this can be undone.
+                    </div>
+
+                    <div className="flex gap-2 flex-wrap">
+                      <button type="button" onClick={() => applyReviewedImport(false)} disabled={nothingToDo}
+                        className="tp-btn-primary tp-focus flex-1 py-2 text-xs disabled:opacity-40">
+                        {plan.missing.length > 0 ? 'Apply & keep everyone' : 'Apply these changes'}
+                      </button>
+                      {plan.missing.length > 0 && (
+                        <button type="button" onClick={() => applyReviewedImport(true)}
+                          className="tp-focus flex-1 py-2 text-xs font-semibold rounded-lg" style={{ background: 'var(--clay)', color: '#fff' }}>
+                          Apply &amp; remove the {plan.missing.length}
+                        </button>
+                      )}
+                      <button type="button" onClick={cancelImport} className="tp-btn-secondary tp-focus px-4 py-2 text-xs">
+                        Cancel
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-xs" style={{ color: 'var(--muted)' }}>
-                    {pendingImport.missing.map((p) => p.name).join(', ')}
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--muted)' }}>
-                    Remove them to match the file exactly, or keep them and just add/update everyone else.
-                  </div>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={resolveImportRemove} className="flex-1 px-3 py-1.5 rounded-md font-semibold text-xs" style={{ background: 'var(--clay)', color: '#fff' }}>
-                      Remove them
-                    </button>
-                    <button type="button" onClick={resolveImportKeep} className="flex-1 px-3 py-1.5 rounded-md font-semibold text-xs" style={{ background: 'var(--court)', color: '#fff' }}>
-                      Keep them
-                    </button>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               <input
                 value={search}
