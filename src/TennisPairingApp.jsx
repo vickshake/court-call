@@ -862,6 +862,20 @@ function isTelemetryKey(key) {
 
 // Coarse device class from the user agent. Deliberately two buckets - anything finer
 // starts to look like fingerprinting and wouldn't change a decision anyway.
+// Brave exposes navigator.brave.isBrave(), which resolves to true only in Brave. Used
+// solely to make a failure message specific - Brave Shields blocks the reCAPTCHA script
+// App Check depends on, so with enforcement on, every Firestore request is rejected.
+// This was the root cause of a real incident, twice; a generic "check your ad blocker"
+// message sends people looking for an extension that isn't there.
+async function detectBrave() {
+  try {
+    if (typeof navigator === 'undefined' || !navigator.brave || !navigator.brave.isBrave) return false;
+    return await navigator.brave.isBrave();
+  } catch {
+    return false;
+  }
+}
+
 function deviceClass() {
   try {
     const ua = navigator.userAgent || '';
@@ -957,6 +971,13 @@ function trackEvent(name, params) {
   } catch {
     // Analytics must never interrupt anything.
   }
+}
+
+// One place for the wording, so the directory warning and the PIN screen can't drift.
+function blockedHelpText(brave) {
+  return brave
+    ? "Brave is blocking this app's security check. Tap the Shields icon — the lion in the address bar — turn Shields off for this site, then refresh."
+    : 'Check your connection, or an ad/privacy-blocker extension, and refresh.';
 }
 
 function formatDurationMs(ms) {
@@ -1392,6 +1413,7 @@ export default function TennisPairingApp() {
   const [snapshots, setSnapshots] = useState([]);
   const [restoreConfirmId, setRestoreConfirmId] = useState(null);
   const [exportPrompt, setExportPrompt] = useState(false);
+  const [isBrave, setIsBrave] = useState(false);
   const [importSkipIds, setImportSkipIds] = useState(new Set());
   const [lockCountdown, setLockCountdown] = useState(null); // seconds left before an idle lock, or null
   const [lockNotice, setLockNotice] = useState('');
@@ -1681,6 +1703,14 @@ export default function TennisPairingApp() {
   }, []);
 
   useEffect(() => { loadAll().then(() => setLoaded(true)); }, [loadAll]);
+
+  // Resolves a moment after load. Only ever used to word an error message more usefully,
+  // so arriving late costs nothing - the generic wording covers the gap.
+  useEffect(() => {
+    let cancelled = false;
+    detectBrave().then((brave) => { if (!cancelled) setIsBrave(brave); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!sessionDate) { setWeatherStatus('idle'); return; }
@@ -3180,7 +3210,7 @@ export default function TennisPairingApp() {
 
               {directoryLoadError && (
                 <div className="text-sm text-center py-8 px-4 rounded-lg" style={{ color: 'var(--clay)', background: 'var(--clay-tint)' }}>
-                  <strong>Couldn't load the player directory.</strong> This does not mean your players are gone — it means this device couldn't confirm either way. Check your connection (or an ad/privacy-blocker extension) and refresh before assuming anything's missing.
+                  <strong>Couldn't load the player directory.</strong> This does not mean your players are gone — it means this device couldn't confirm either way. {blockedHelpText(isBrave)} Nothing is missing until you've checked.
                 </div>
               )}
 
@@ -3251,7 +3281,9 @@ export default function TennisPairingApp() {
               )}
               {registryUnavailable && (
                 <div className="text-xs max-w-xs px-3 py-2 rounded-lg" style={{ color: 'var(--clay)', background: 'var(--clay-tint)' }}>
-                  Can't confirm access right now — this device couldn't reach the server. No PIN will work until this is resolved. Check your connection (or an ad/privacy-blocker extension) and refresh.
+                  {isBrave
+                    ? "Brave is blocking this app's security check, so no PIN will work until that's sorted. Tap the Shields icon — the lion in the address bar — turn Shields off for this site, then refresh. Your data is safe; the app just can't verify itself right now."
+                    : "Can't confirm access right now — this device couldn't reach the server. No PIN will work until this is resolved. Check your connection, or an ad/privacy-blocker extension, and refresh."}
                 </div>
               )}
               <input
