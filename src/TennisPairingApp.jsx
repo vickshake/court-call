@@ -111,6 +111,74 @@ function bestMixedSplit(men, women, partnerHist, opponentHist, playerMap) {
   return cA <= cB ? optA : optB;
 }
 
+/* ---- the same-sex set ------------------------------------------------------
+   How the club actually plays: the second set splits by sex. Women's doubles and
+   men's doubles wherever the numbers allow, and anyone left over plays mixed as
+   normal. Symmetric by design - this is a format for the set, not a rule about one
+   group.
+
+   A preference, never a guarantee. Fewer than four of a sex and that side simply
+   isn't split off; a set that can be played beats a rule that can't be honored.   */
+const WOMENS_DOUBLES = "Women's Doubles";
+const MENS_DOUBLES = "Men's Doubles";
+// Zero-based: the SECOND set.
+const SAME_SEX_SET_INDEX = 1;
+const MIN_FOR_SINGLE_SEX_COURT = 4;
+
+function isSingleSexFormat(format) {
+  return format === WOMENS_DOUBLES || format === MENS_DOUBLES;
+}
+
+function requiredSexFor(format) {
+  if (format === WOMENS_DOUBLES) return 'F';
+  if (format === MENS_DOUBLES) return 'M';
+  return null;
+}
+
+// Builds the court list for one set. On the same-sex set, as many courts as the
+// headcount supports become single-sex: women from the highest-numbered court down,
+// men from the lowest up, which is how the club already arranges itself. Anything
+// left in the middle stays mixed.
+function courtSlotsForSet(courtSlots, setIndex, players, enabled) {
+  if (!enabled || setIndex !== SAME_SEX_SET_INDEX) return courtSlots;
+  if (courtSlots.length < 2) return courtSlots; // one court - nothing to split
+
+  const women = players.filter((p) => p.sex === 'F').length;
+  const men = players.filter((p) => p.sex === 'M').length;
+
+  // Singles courts can't hold four, so they're never designated.
+  const eligible = courtSlots
+    .map((slot, i) => ({ slot, i }))
+    .filter(({ slot }) => slot.format !== 'Singles')
+    .sort((a, b) => (a.slot.courtNumber || 0) - (b.slot.courtNumber || 0));
+  if (eligible.length < 2) return courtSlots;
+
+  let womensCourts = Math.floor(women / MIN_FOR_SINGLE_SEX_COURT);
+  let mensCourts = Math.floor(men / MIN_FOR_SINGLE_SEX_COURT);
+  // Never designate every court: leaving one mixed keeps somewhere for the leftovers
+  // of both sexes to play together instead of being benched.
+  while (womensCourts + mensCourts > eligible.length - (womensCourts && mensCourts ? 0 : 1)) {
+    if (womensCourts >= mensCourts) womensCourts -= 1; else mensCourts -= 1;
+    if (womensCourts <= 0 && mensCourts <= 0) break;
+  }
+  womensCourts = Math.max(0, womensCourts);
+  mensCourts = Math.max(0, mensCourts);
+  if (womensCourts === 0 && mensCourts === 0) return courtSlots;
+
+  const assign = new Map();
+  // Women take the highest-numbered courts, men the lowest.
+  for (let k = 0; k < womensCourts; k += 1) {
+    const target = eligible[eligible.length - 1 - k];
+    if (target) assign.set(target.i, WOMENS_DOUBLES);
+  }
+  for (let k = 0; k < mensCourts; k += 1) {
+    const target = eligible[k];
+    if (target && !assign.has(target.i)) assign.set(target.i, MENS_DOUBLES);
+  }
+
+  return courtSlots.map((slot, i) => (assign.has(i) ? { ...slot, format: assign.get(i), autoSameSex: true } : slot));
+}
+
 function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutCount, playerMap) {
   let bestRound = null;
   let bestScore = Infinity;
@@ -122,7 +190,14 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
     const used = new Set();
     const matches = [];
 
-    for (const slot of courtSlots) {
+    // A single-sex court has to pick before anything else. Filling in court order would
+    // let the mixed courts take the women first, leaving the ladies' court short and
+    // silently degrading it back to ordinary doubles.
+    const fillOrder = courtSlots
+      .map((slot, i) => ({ slot, i }))
+      .sort((a, b) => (isSingleSexFormat(b.slot.format) ? 1 : 0) - (isSingleSexFormat(a.slot.format) ? 1 : 0));
+
+    for (const { slot } of fillOrder) {
       const candidates = pool.filter((id) => !used.has(id));
       let actualFormat = slot.format;
 
@@ -132,6 +207,13 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
         if (men.length < 2 || women.length < 2) actualFormat = 'Doubles';
       }
 
+      if (isSingleSexFormat(actualFormat)) {
+        const sex = requiredSexFor(actualFormat);
+        // Not enough of that sex left - play an ordinary doubles court rather than
+        // dropping the court and sitting four people down for no reason.
+        if (candidates.filter((id) => playerMap[id].sex === sex).length < 4) actualFormat = 'Doubles';
+      }
+
       const need = actualFormat === 'Singles' ? 2 : 4;
       if (candidates.length < need) continue;
 
@@ -139,7 +221,11 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
       let teamA;
       let teamB;
 
-      if (actualFormat === 'Mixed Doubles') {
+      if (isSingleSexFormat(actualFormat)) {
+        const sex = requiredSexFor(actualFormat);
+        chosen = shuffleArr(candidates.filter((id) => playerMap[id].sex === sex)).slice(0, 4);
+        ({ teamA, teamB } = bestDoublesSplit(chosen, partnerHist, opponentHist, playerMap));
+      } else if (actualFormat === 'Mixed Doubles') {
         const men = shuffleArr(candidates.filter((id) => playerMap[id].sex === 'M')).slice(0, 2);
         const women = shuffleArr(candidates.filter((id) => playerMap[id].sex === 'F')).slice(0, 2);
         chosen = [...men, ...women];
@@ -156,6 +242,9 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
       chosen.forEach((id) => used.add(id));
       matches.push({ format: actualFormat, teamA, teamB, courtNumber: slot.courtNumber });
     }
+
+    // Filled out of order above; shown in court order.
+    matches.sort((a, b) => (a.courtNumber || 0) - (b.courtNumber || 0));
 
     const sittingOut = availableIds.filter((id) => !used.has(id));
 
@@ -342,12 +431,16 @@ function applyCourtPreferences(matches, playerMap) {
   }
 
   arranged.forEach((match) => {
+    // A single-sex court was placed deliberately; an individual court preference
+    // doesn't get to drag it somewhere else.
+    if (isSingleSexFormat(match.format)) return;
     const holder = preferenceHolder(match);
     if (!holder) return;
     if (match.courtNumber === holder.preferredCourt) return; // already there
     const targetIdx = findByCourtNumber(holder.preferredCourt);
     if (targetIdx === -1) return; // that court number isn't in play this round
     const occupant = arranged[targetIdx];
+    if (isSingleSexFormat(occupant.format)) return; // leave the ladies' court where it was put
     if (preferenceHolder(occupant)) return; // don't bump someone else's own preference to satisfy this one
     const myNumber = match.courtNumber;
     match.courtNumber = occupant.courtNumber;
@@ -425,7 +518,7 @@ function formatScheduleForGroupMe(schedule) {
 }
 
 
-function generateSchedule(players, courtSlots, roundCount) {
+function generateSchedule(players, courtSlots, roundCount, sameSexSet = true) {
   const playerMap = {};
   players.forEach((p) => { playerMap[p.id] = p; });
   const ids = players.map((p) => p.id);
@@ -437,7 +530,10 @@ function generateSchedule(players, courtSlots, roundCount) {
 
   const rounds = [];
   for (let r = 0; r < roundCount; r++) {
-    const round = buildRound(ids, courtSlots, partnerHist, opponentHist, sitOutCount, playerMap);
+    // The court list can differ set to set - the second set designates a ladies' court
+    // when there are enough women playing.
+    const slotsThisSet = courtSlotsForSet(courtSlots, r, players, sameSexSet);
+    const round = buildRound(ids, slotsThisSet, partnerHist, opponentHist, sitOutCount, playerMap);
     if (!round) break;
     round.matches = applyCourtPreferences(round.matches, playerMap);
     round.matches.forEach((m) => {
@@ -1352,6 +1448,7 @@ export default function TennisPairingApp() {
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [calendarStatus, setCalendarStatus] = useState('idle'); // idle | loading | ready | error
   const [rounds, setRounds] = useState(3);
+  const [sameSexSet, setSameSexSet] = useState(true);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
 
@@ -1638,6 +1735,7 @@ export default function TennisPairingApp() {
       setSessionTime(w.sessionTime || '');
       setSessionDuration(w.sessionDuration || '');
       if (w.rounds) setRounds(w.rounds);
+      setSameSexSet(w.sameSexSet !== false); // default on for weeks saved before this existed
       setSchedule(w.schedule || null);
     }
     // No explicit else here, deliberately: on an ambiguous failure this leaves the
@@ -1837,6 +1935,7 @@ export default function TennisPairingApp() {
       sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : sessionTime,
       sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
+      sameSexSet: partial.sameSexSet !== undefined ? partial.sameSexSet : sameSexSet,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
       updatedAt: Date.now(),
     };
@@ -1846,6 +1945,7 @@ export default function TennisPairingApp() {
     if (partial.sessionTime !== undefined) setSessionTime(partial.sessionTime);
     if (partial.sessionDuration !== undefined) setSessionDuration(partial.sessionDuration);
     if (partial.rounds !== undefined) setRounds(partial.rounds);
+    if (partial.sameSexSet !== undefined) setSameSexSet(partial.sameSexSet);
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
     try {
       await window.storage.set(WEEKLY_KEY, JSON.stringify(next), true);
@@ -2344,7 +2444,7 @@ export default function TennisPairingApp() {
     recordAction('generate');
     const players = directory.filter((p) => playingIds.includes(p.id));
     const usableCourts = assignedCourts.filter((c) => c.courtNumber !== null);
-    const result = generateSchedule(players, usableCourts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds);
+    const result = generateSchedule(players, usableCourts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds, sameSexSet);
     persistWeekly({ schedule: result });
     setTab('results');
   }
@@ -4090,7 +4190,30 @@ export default function TennisPairingApp() {
                   <button type="button" onClick={() => setRoundsCount(rounds + 1)} className="tp-focus w-8 h-8 rounded-full border font-bold" style={{ borderColor: 'var(--line)' }} aria-label="More sets">+</button>
                 </div>
                 <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
-                  Partners rotate after each set, balancing skill first, then avoiding repeats, then mixed-doubles gender balance, then grouping similar competitive ratings on the same court, then fair sit-out rotation. Anyone with a firm court preference plays there every set; a soft preference is honored unless it conflicts with someone else's firm one.
+                  Partners rotate after each set, balancing skill first, then avoiding repeats, then mixed-doubles gender balance, then grouping similar competitive ratings on the same court, then fair sit-out rotation. Anyone with a firm court preference plays there every set.
+                </div>
+              </div>
+
+              <div className="tp-card p-4">
+                <button
+                  type="button"
+                  onClick={() => persistWeekly({ sameSexSet: !sameSexSet })}
+                  className="tp-focus w-full flex items-center gap-3 text-left"
+                >
+                  <span className="flex items-center justify-center shrink-0" style={{
+                    width: 20, height: 20, borderRadius: 6,
+                    border: sameSexSet ? 'none' : '2px solid var(--line)',
+                    background: sameSexSet ? 'var(--court)' : 'transparent',
+                  }}>
+                    {sameSexSet && <Check size={13} color="#fff" />}
+                  </span>
+                  <span className="flex-1 text-sm font-semibold">Split the second set by sex</span>
+                </button>
+                <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
+                  Set 2 runs as women's doubles and men's doubles wherever the numbers allow —
+                  women on the higher courts, men on the lower, anyone left over plays mixed as usual.
+                  Four of a sex are needed to make a court; short of that, nothing is split and the
+                  set is built like any other. Sets 1 and 3 are always mixed.
                 </div>
               </div>
 
