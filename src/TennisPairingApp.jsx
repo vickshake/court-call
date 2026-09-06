@@ -111,19 +111,30 @@ function bestMixedSplit(men, women, partnerHist, opponentHist, playerMap) {
   return cA <= cB ? optA : optB;
 }
 
-/* ---- the same-sex set ------------------------------------------------------
-   How the club actually plays: the second set splits by sex. Women's doubles and
-   men's doubles wherever the numbers allow, and anyone left over plays mixed as
-   normal. Symmetric by design - this is a format for the set, not a rule about one
-   group.
+/* ---- per-set formats -------------------------------------------------------
+   Format belongs to the SET, not the court. Courts are just numbers now; what gets
+   played on them can differ from one set to the next, which is how the club actually
+   plays - mixed first, then split by sex.
 
-   A preference, never a guarantee. Fewer than four of a sex and that side simply
-   isn't split off; a set that can be played beats a rule that can't be honored.   */
+   Three choices per set:
+     Mixed        - mixed doubles, with a singles court for a leftover pair
+     Split by sex - women's and men's doubles where four of a sex are playing
+     Singles      - the whole set played as singles
+
+   Split and singles are preferences, not guarantees. If the headcount can't support
+   them the set falls back to something playable rather than failing.                */
+const SET_FORMAT_MIXED = 'mixed';
+const SET_FORMAT_SPLIT = 'split';
+const SET_FORMAT_SINGLES = 'singles';
+const SET_FORMAT_LABELS = {
+  [SET_FORMAT_MIXED]: 'Mixed',
+  [SET_FORMAT_SPLIT]: 'Split by sex',
+  [SET_FORMAT_SINGLES]: 'Singles',
+};
 const WOMENS_DOUBLES = "Women's Doubles";
 const MENS_DOUBLES = "Men's Doubles";
-// Zero-based: the SECOND set.
-const SAME_SEX_SET_INDEX = 1;
 const MIN_FOR_SINGLE_SEX_COURT = 4;
+const MAX_COURTS = 6;
 
 function isSingleSexFormat(format) {
   return format === WOMENS_DOUBLES || format === MENS_DOUBLES;
@@ -135,48 +146,85 @@ function requiredSexFor(format) {
   return null;
 }
 
-// Builds the court list for one set. On the same-sex set, as many courts as the
-// headcount supports become single-sex: women from the highest-numbered court down,
-// men from the lowest up, which is how the club already arranges itself. Anything
-// left in the middle stays mixed.
-function courtSlotsForSet(courtSlots, setIndex, players, enabled) {
-  if (!enabled || setIndex !== SAME_SEX_SET_INDEX) return courtSlots;
-  if (courtSlots.length < 2) return courtSlots; // one court - nothing to split
+// Court numbers for a given count: 1-4 first, then 5 and 6. A real constraint of the
+// club's courts, not a preference.
+function courtNumbersFor(count) {
+  return [1, 2, 3, 4, 5, 6].slice(0, Math.min(count, MAX_COURTS));
+}
 
+// The courts one set needs, derived entirely from the headcount and that set's format.
+// Returns [{ format, courtNumber }] - the same shape the pairing engine already takes.
+function courtsForSet(players, setFormat) {
+  const n = players.length;
+  if (n < 2) return [];
+
+  if (setFormat === SET_FORMAT_SINGLES) {
+    const courts = Math.min(Math.floor(n / 2), MAX_COURTS);
+    return courtNumbersFor(courts).map((courtNumber) => ({ format: 'Singles', courtNumber }));
+  }
+
+  // Mixed and split share the same shape: doubles courts, plus a singles court when
+  // exactly two people would otherwise be left with nothing to fill.
+  const doublesCourts = Math.min(Math.floor(n / 4), MAX_COURTS);
+  const remainder = n - doublesCourts * 4;
+  const formats = Array.from({ length: doublesCourts }, () => 'Mixed Doubles');
+  if (remainder === 2 && formats.length < MAX_COURTS) formats.push('Singles');
+  const numbers = courtNumbersFor(formats.length);
+  const slots = formats.map((format, i) => ({ format, courtNumber: numbers[i] }));
+
+  if (setFormat !== SET_FORMAT_SPLIT) return slots;
+
+  // Split by sex: as many single-sex courts as the headcount supports. Women take the
+  // highest-numbered doubles courts, men the lowest - how the club already arranges
+  // itself. One mixed court is kept back where possible so the leftovers of both sexes
+  // have somewhere to play rather than being benched.
   const women = players.filter((p) => p.sex === 'F').length;
   const men = players.filter((p) => p.sex === 'M').length;
-
-  // Singles courts can't hold four, so they're never designated.
-  const eligible = courtSlots
+  const eligible = slots
     .map((slot, i) => ({ slot, i }))
-    .filter(({ slot }) => slot.format !== 'Singles')
-    .sort((a, b) => (a.slot.courtNumber || 0) - (b.slot.courtNumber || 0));
-  if (eligible.length < 2) return courtSlots;
+    .filter(({ slot }) => slot.format !== 'Singles');
+  if (eligible.length < 2) return slots;
 
   let womensCourts = Math.floor(women / MIN_FOR_SINGLE_SEX_COURT);
   let mensCourts = Math.floor(men / MIN_FOR_SINGLE_SEX_COURT);
-  // Never designate every court: leaving one mixed keeps somewhere for the leftovers
-  // of both sexes to play together instead of being benched.
-  while (womensCourts + mensCourts > eligible.length - (womensCourts && mensCourts ? 0 : 1)) {
+  while (womensCourts + mensCourts > eligible.length) {
     if (womensCourts >= mensCourts) womensCourts -= 1; else mensCourts -= 1;
     if (womensCourts <= 0 && mensCourts <= 0) break;
   }
   womensCourts = Math.max(0, womensCourts);
   mensCourts = Math.max(0, mensCourts);
-  if (womensCourts === 0 && mensCourts === 0) return courtSlots;
+  if (womensCourts === 0 && mensCourts === 0) return slots;
 
-  const assign = new Map();
-  // Women take the highest-numbered courts, men the lowest.
+  const next = slots.map((slot) => ({ ...slot }));
   for (let k = 0; k < womensCourts; k += 1) {
     const target = eligible[eligible.length - 1 - k];
-    if (target) assign.set(target.i, WOMENS_DOUBLES);
+    if (target) next[target.i].format = WOMENS_DOUBLES;
   }
   for (let k = 0; k < mensCourts; k += 1) {
     const target = eligible[k];
-    if (target && !assign.has(target.i)) assign.set(target.i, MENS_DOUBLES);
+    if (target && !isSingleSexFormat(next[target.i].format)) next[target.i].format = MENS_DOUBLES;
   }
+  return next;
+}
 
-  return courtSlots.map((slot, i) => (assign.has(i) ? { ...slot, format: assign.get(i), autoSameSex: true } : slot));
+// A plain-English summary of what a set will look like, built from the same function
+// that builds it - so the description can't drift from the result.
+// The club's usual shape: mixed, then split by sex, then mixed again.
+function defaultSetFormats(count) {
+  return Array.from({ length: Math.max(1, count) }, (_, i) => (i === 1 ? SET_FORMAT_SPLIT : SET_FORMAT_MIXED));
+}
+
+function describeSetCourts(slots) {
+  if (!slots.length) return 'not enough players yet';
+  const counts = {};
+  slots.forEach((s2) => { counts[s2.format] = (counts[s2.format] || 0) + 1; });
+  const order = ['Mixed Doubles', WOMENS_DOUBLES, MENS_DOUBLES, 'Doubles', 'Singles'];
+  const names = {
+    'Mixed Doubles': 'mixed', [WOMENS_DOUBLES]: "women's", [MENS_DOUBLES]: "men's",
+    Doubles: 'doubles', Singles: 'singles',
+  };
+  const parts = order.filter((f) => counts[f]).map((f) => `${counts[f]} ${names[f]}`);
+  return `${parts.join(' · ')} · court${slots.length === 1 ? '' : 's'} ${slots.map((x) => x.courtNumber).join(', ')}`;
 }
 
 function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutCount, playerMap) {
@@ -271,110 +319,6 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
   return bestRound;
 }
 
-// Parses court numbers out of a CTA calendar event title. Confirmed format from real
-// examples: "Ct 6 - JC Lssn - OMat" (single court), "Cts 1-2: CTA Tennis" (hyphen range),
-// "Cts 1,2,3 : USTA 8.0 MX" (comma list). Returns [] if the title doesn't match at all,
-// so an unrecognized event safely blocks nothing rather than guessing.
-function parseCourtsFromEventTitle(title) {
-  if (!title) return [];
-  const match = title.match(/^Cts?\s*([\d,\-\s]+)[:\-]/i);
-  if (!match) return [];
-  const body = match[1].trim();
-  if (body.includes('-')) {
-    const [a, b] = body.split('-').map((s) => parseInt(s.trim(), 10));
-    if (Number.isNaN(a) || Number.isNaN(b)) return [];
-    const nums = [];
-    for (let n = a; n <= b; n++) nums.push(n);
-    return nums;
-  }
-  if (body.includes(',')) {
-    return body.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
-  }
-  const single = parseInt(body, 10);
-  return Number.isNaN(single) ? [] : [single];
-}
-
-function doTimesOverlap(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && bStart < aEnd;
-}
-
-// Given calendar events (each {date: 'YYYY-MM-DD', startMinutes, endMinutes, title}) and a
-// requested session window, returns which of courts 1-6 are blocked by a real overlap.
-function computeBookedCourts(events, sessionDate, sessionStartMinutes, sessionEndMinutes) {
-  const blocked = new Set();
-  events.forEach((ev) => {
-    if (ev.date !== sessionDate) return;
-    if (!doTimesOverlap(sessionStartMinutes, sessionEndMinutes, ev.startMinutes, ev.endMinutes)) return;
-    parseCourtsFromEventTitle(ev.title).forEach((n) => blocked.add(n));
-  });
-  return blocked;
-}
-
-// Converts one ICS DTSTART/DTEND value (e.g. "20260802T100000Z" or "20260802T100000") into
-// {date: 'YYYY-MM-DD', minutes} in Half Moon Bay local time, per RFC 5545.
-function icsDateTimeToLocal(dtValue) {
-  const isUTC = dtValue.endsWith('Z');
-  const clean = dtValue.replace('Z', '');
-  const y = clean.slice(0, 4);
-  const mo = clean.slice(4, 6);
-  const d = clean.slice(6, 8);
-  const h = clean.slice(9, 11);
-  const mi = clean.slice(11, 13);
-  if (!isUTC) {
-    // No Z suffix: per RFC 5545 this is either a floating time or paired with a TZID
-    // parameter. For this specific calendar (Half Moon Bay club events), the digits are
-    // already the local wall-clock time, so no conversion is needed or safe to assume.
-    return { date: `${y}-${mo}-${d}`, minutes: Number(h) * 60 + Number(mi) };
-  }
-  // Z suffix: genuinely UTC, needs real conversion to Pacific time. Routed through Intl
-  // rather than a hardcoded offset, since that offset shifts with daylight saving.
-  const dt = new Date(`${y}-${mo}-${d}T${h}:${mi}:00Z`);
-  const localDateStr = dt.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-  const localTimeStr = dt.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour12: false });
-  const [lh, lm] = localTimeStr.split(':').map(Number);
-  return { date: localDateStr, minutes: lh * 60 + lm };
-}
-
-// Parses a raw ICS (iCalendar) document into {title, date, startMinutes, endMinutes} events.
-// Handles RFC 5545 line folding (continuation lines start with a space) before extracting
-// VEVENT blocks, so a SUMMARY or DTSTART split across physical lines still reads correctly.
-function parseICS(icsText) {
-  if (!icsText) return [];
-  const rawLines = icsText.split(/\r\n|\n|\r/);
-  const lines = [];
-  rawLines.forEach((line) => {
-    if ((line.startsWith(' ') || line.startsWith('\t')) && lines.length > 0) {
-      lines[lines.length - 1] += line.slice(1);
-    } else {
-      lines.push(line);
-    }
-  });
-
-  const events = [];
-  let current = null;
-  lines.forEach((line) => {
-    if (line.startsWith('BEGIN:VEVENT')) {
-      current = { title: '', dtstart: '', dtend: '' };
-    } else if (line.startsWith('END:VEVENT')) {
-      if (current && current.dtstart && current.dtend) {
-        const start = icsDateTimeToLocal(current.dtstart);
-        const end = icsDateTimeToLocal(current.dtend);
-        events.push({ title: current.title, date: start.date, startMinutes: start.minutes, endMinutes: end.minutes });
-      }
-      current = null;
-    } else if (current) {
-      if (line.startsWith('SUMMARY')) {
-        current.title = line.slice(line.indexOf(':') + 1).trim();
-      } else if (line.startsWith('DTSTART')) {
-        current.dtstart = line.slice(line.lastIndexOf(':') + 1).trim();
-      } else if (line.startsWith('DTEND')) {
-        current.dtend = line.slice(line.lastIndexOf(':') + 1).trim();
-      }
-    }
-  });
-  return events;
-}
-
 // Given a player count, returns the court setup that uses as many of them as possible:
 // doubles courts first (4 each), with a leftover pair going to a singles court.
 function idealCourtSetup(n) {
@@ -384,37 +328,6 @@ function idealCourtSetup(n) {
   const setup = Array.from({ length: doublesCourts }, () => 'Mixed Doubles');
   if (remainder === 2 && setup.length < 6) setup.push('Singles');
   return setup;
-}
-
-function computeCourtAssignments(courtsList, blockedNumbers, preferredNumbers) {
-  // 1-4 always tried before 5-6, simply because ascending order already puts them first.
-  // Numbers blocked by a real, overlapping calendar event are skipped the same way. A slot
-  // with an explicit manual override always gets that number directly - overrides are also
-  // reserved from the auto-assignment pool for other slots, so a manual pick isn't silently
-  // handed to someone else too. (Two overrides pointing at the same number is still possible
-  // and deliberately not prevented here - that's surfaced as a clash warning in the UI instead,
-  // since silently resolving someone's explicit choice would be the wrong call.)
-  //
-  // Firm court preferences (for people actually playing today) are pulled to the front of the
-  // priority order. Without this, a small session - say 4 people, one court needed - would
-  // always number that lone court "1" by strict ascending order, even if the one person
-  // playing has a firm preference for court 2 specifically. There'd be no court 2 in the
-  // session at all for that preference to land on, no matter what applyCourtPreferences does
-  // afterward - the number has to actually be among the assigned courts first.
-  const blocked = blockedNumbers || new Set();
-  const overriddenNumbers = new Set(courtsList.filter((c) => c.courtNumberOverride).map((c) => c.courtNumberOverride));
-  const preferred = (preferredNumbers || []).filter((n, i, arr) => arr.indexOf(n) === i);
-  const orderedCandidates = [...preferred, ...[1, 2, 3, 4, 5, 6].filter((n) => !preferred.includes(n))];
-  const priority = orderedCandidates.filter((n) => !blocked.has(n) && !overriddenNumbers.has(n));
-  const used = new Set();
-  return courtsList.map((c) => {
-    if (c.courtNumberOverride) {
-      return { ...c, courtNumber: c.courtNumberOverride };
-    }
-    const num = priority.find((n) => !used.has(n));
-    if (num !== undefined) used.add(num);
-    return { ...c, courtNumber: num !== undefined ? num : null };
-  });
 }
 
 function applyCourtPreferences(matches, playerMap) {
@@ -518,7 +431,7 @@ function formatScheduleForGroupMe(schedule) {
 }
 
 
-function generateSchedule(players, courtSlots, roundCount, sameSexSet = true) {
+function generateSchedule(players, setFormats) {
   const playerMap = {};
   players.forEach((p) => { playerMap[p.id] = p; });
   const ids = players.map((p) => p.id);
@@ -529,13 +442,15 @@ function generateSchedule(players, courtSlots, roundCount, sameSexSet = true) {
   ids.forEach((id) => { sitOutCount[id] = 0; });
 
   const rounds = [];
-  for (let r = 0; r < roundCount; r++) {
-    // The court list can differ set to set - the second set designates a ladies' court
-    // when there are enough women playing.
-    const slotsThisSet = courtSlotsForSet(courtSlots, r, players, sameSexSet);
+  for (let r = 0; r < setFormats.length; r++) {
+    // Courts are derived per set, so the count and formats can differ set to set -
+    // a singles set needs more courts than a doubles set of the same people.
+    const slotsThisSet = courtsForSet(players, setFormats[r]);
+    if (!slotsThisSet.length) break;
     const round = buildRound(ids, slotsThisSet, partnerHist, opponentHist, sitOutCount, playerMap);
     if (!round) break;
     round.matches = applyCourtPreferences(round.matches, playerMap);
+    round.setFormat = setFormats[r];
     round.matches.forEach((m) => {
       if (m.teamA.length === 2) {
         const k = pairKey(m.teamA[0], m.teamA[1]);
@@ -1433,22 +1348,16 @@ const BLANK_FORM = {
 export default function TennisPairingApp() {
   const [directory, setDirectory] = useState([]);
   const [playingIds, setPlayingIds] = useState([]);
-  const [courts, setCourts] = useState([
-    { id: 'c1', format: 'Mixed Doubles', courtNumber: 1 },
-    { id: 'c2', format: 'Mixed Doubles', courtNumber: 2 },
-    { id: 'c3', format: 'Doubles', courtNumber: 3 },
-    { id: 'c4', format: 'Doubles', courtNumber: 4 },
-  ]);
   const [sessionDate, setSessionDate] = useState(todayISO());
   const [sessionTime, setSessionTime] = useState('');
   const [sessionDuration, setSessionDuration] = useState('');
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState('idle'); // idle | loading | ready | unavailable | error
   const [nwsConditionText, setNwsConditionText] = useState(null);
-  const [calendarEvents, setCalendarEvents] = useState([]);
-  const [calendarStatus, setCalendarStatus] = useState('idle'); // idle | loading | ready | error
   const [rounds, setRounds] = useState(3);
-  const [sameSexSet, setSameSexSet] = useState(true);
+  // One entry per set. Length is the number of sets, so the +/- control and the
+  // formats are the same piece of state - they can't disagree.
+  const [setFormats, setSetFormats] = useState([SET_FORMAT_MIXED, SET_FORMAT_SPLIT, SET_FORMAT_MIXED]);
   const [schedule, setSchedule] = useState(null);
   const [history, setHistory] = useState([]);
 
@@ -1729,13 +1638,15 @@ export default function TennisPairingApp() {
     if (weeklyState) {
       const w = weeklyState;
       setPlayingIds(w.playingIds || []);
-      if (w.courts) setCourts(w.courts);
       const loadedDate = w.sessionDate || todayISO();
       setSessionDate(loadedDate < todayISO() ? todayISO() : loadedDate);
       setSessionTime(w.sessionTime || '');
       setSessionDuration(w.sessionDuration || '');
       if (w.rounds) setRounds(w.rounds);
-      setSameSexSet(w.sameSexSet !== false); // default on for weeks saved before this existed
+      // Weeks saved before formats moved onto sets carry only a count. Rebuild the
+      // club's usual shape from it - mixed, split, mixed - rather than losing the week.
+      if (Array.isArray(w.setFormats) && w.setFormats.length) setSetFormats(w.setFormats);
+      else if (w.rounds) setSetFormats(defaultSetFormats(w.rounds));
       setSchedule(w.schedule || null);
     }
     // No explicit else here, deliberately: on an ambiguous failure this leaves the
@@ -1866,33 +1777,6 @@ export default function TennisPairingApp() {
     return () => { cancelled = true; if (intervalId) clearInterval(intervalId); };
   }, [sessionDate]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setCalendarStatus('loading');
-    // CTA Court Schedule calendar ID, decoded from the public embed URL on coastsidetennis.com.
-    const CALENDAR_ID = 'p17l7jan7vro6mlh22hialkcng@group.calendar.google.com';
-    const icsUrl = `https://calendar.google.com/calendar/ical/${encodeURIComponent(CALENDAR_ID)}/public/basic.ics`;
-    fetch(icsUrl)
-      .then((res) => {
-        if (!res.ok) throw new Error('calendar fetch failed: ' + res.status);
-        return res.text();
-      })
-      .then((text) => {
-        if (cancelled) return;
-        setCalendarEvents(parseICS(text));
-        setCalendarStatus('ready');
-      })
-      .catch((e) => {
-        // Expected to be the most fragile part of this feature - CORS, the calendar not
-        // truly being public, or the feed format differing are all real possibilities this
-        // sandbox can't rule out ahead of time. Failing here should never break the rest of
-        // the app - it just means court availability isn't calendar-verified this session.
-        console.error('calendar fetch failed', e);
-        if (!cancelled) { setCalendarStatus('error'); setCalendarEvents([]); }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
   async function persistDirectory(next) {
     setDirectory(next);
     try {
@@ -1914,38 +1798,22 @@ export default function TennisPairingApp() {
       capNotice = `Only the first ${MAX_PLAYING} stuck — that's the most this app can pair at once (6 courts × 4).`;
       incomingPlayingIds = incomingPlayingIds.slice(0, MAX_PLAYING);
     }
-    let nextCourts = partial.courts !== undefined ? partial.courts : courts;
-    if (incomingPlayingIds !== undefined && partial.courts === undefined) {
-      // Court count and format track the player count automatically - 8 playing means
-      // exactly 2 courts, not whatever was left over from a previous, different-sized group.
-      // Any manual court-number override is preserved by position where a slot still exists,
-      // so toggling one player doesn't silently discard a deliberate override on another slot.
-      const formats = idealCourtSetup(incomingPlayingIds.length);
-      nextCourts = formats.map((format, i) => {
-        const prior = courts[i];
-        const entry = { id: prior ? prior.id : uid(), format };
-        if (prior && prior.courtNumberOverride) entry.courtNumberOverride = prior.courtNumberOverride;
-        return entry;
-      });
-    }
     const next = {
       playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : playingIds,
-      courts: nextCourts,
       sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
       sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : sessionTime,
       sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
       rounds: partial.rounds !== undefined ? partial.rounds : rounds,
-      sameSexSet: partial.sameSexSet !== undefined ? partial.sameSexSet : sameSexSet,
+      setFormats: partial.setFormats !== undefined ? partial.setFormats : setFormats,
       schedule: partial.schedule !== undefined ? partial.schedule : schedule,
       updatedAt: Date.now(),
     };
     if (incomingPlayingIds !== undefined) setPlayingIds(incomingPlayingIds);
-    setCourts(nextCourts);
     if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
     if (partial.sessionTime !== undefined) setSessionTime(partial.sessionTime);
     if (partial.sessionDuration !== undefined) setSessionDuration(partial.sessionDuration);
     if (partial.rounds !== undefined) setRounds(partial.rounds);
-    if (partial.sameSexSet !== undefined) setSameSexSet(partial.sameSexSet);
+    if (partial.setFormats !== undefined) setSetFormats(partial.setFormats);
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
     try {
       await window.storage.set(WEEKLY_KEY, JSON.stringify(next), true);
@@ -2424,27 +2292,21 @@ export default function TennisPairingApp() {
   }
 
   function setRoundsCount(n) {
-    persistWeekly({ rounds: Math.max(1, n) });
+    const next = Math.max(1, Math.min(9, n));
+    const formats = Array.from({ length: next }, (_, i) => (
+      setFormats[i] !== undefined ? setFormats[i] : defaultSetFormats(next)[i]
+    ));
+    persistWeekly({ rounds: next, setFormats: formats });
   }
 
-  function setCourtSlotOverride(courtId, value) {
-    const num = value === '' ? null : Number(value);
-    const next = courts.map((c) => {
-      if (c.id !== courtId) return c;
-      if (num === null) {
-        const { courtNumberOverride, ...rest } = c;
-        return rest;
-      }
-      return { ...c, courtNumberOverride: num };
-    });
-    persistWeekly({ courts: next });
+  function setFormatForSet(index, value) {
+    persistWeekly({ setFormats: setFormats.map((f, i) => (i === index ? value : f)) });
   }
 
   function handleGenerate() {
     recordAction('generate');
     const players = directory.filter((p) => playingIds.includes(p.id));
-    const usableCourts = assignedCourts.filter((c) => c.courtNumber !== null);
-    const result = generateSchedule(players, usableCourts.map((c) => ({ format: c.format, courtNumber: c.courtNumber })), rounds, sameSexSet);
+    const result = generateSchedule(players, setFormats);
     persistWeekly({ schedule: result });
     setTab('results');
   }
@@ -2734,18 +2596,13 @@ export default function TennisPairingApp() {
     : [];
 
   const playingCount = playingIds.length;
+  const playingPlayers = directory.filter((p) => playingIds.includes(p.id));
   const preferredCourtNumbers = directory
     .filter((p) => playingIds.includes(p.id) && p.preferredCourt)
     .map((p) => p.preferredCourt);
-  const sessionStartMinutes = sessionTime ? (() => { const [h, m] = sessionTime.split(':').map(Number); return h * 60 + m; })() : null;
-  const sessionEndMinutes = sessionStartMinutes !== null && sessionDuration ? sessionStartMinutes + Number(sessionDuration) : null;
-  const blockedCourtNumbers = sessionStartMinutes !== null && sessionEndMinutes !== null
-    ? computeBookedCourts(calendarEvents, sessionDate, sessionStartMinutes, sessionEndMinutes)
-    : new Set();
-  const assignedCourts = computeCourtAssignments(courts, blockedCourtNumbers, preferredCourtNumbers);
-  const neededPerRound = courts.reduce((s, c) => s + (c.format === 'Singles' ? 2 : 4), 0);
-  const canFillAtLeastOneCourt = courts.some((c) => playingCount >= (c.format === 'Singles' ? 2 : 4));
-  const canGenerate = playingCount >= 2 && courts.length > 0 && canFillAtLeastOneCourt;
+  // Whether anything can be played at all is now a property of the headcount alone -
+  // courts are derived per set rather than configured up front.
+  const canGenerate = playingCount >= 2 && setFormats.some((f) => courtsForSet(playingPlayers, f).length > 0);
 
   const records = {};
   directory.forEach((p) => { records[p.id] = { id: p.id, wins: 0, losses: 0, name: p.name }; });
@@ -4112,9 +3969,10 @@ export default function TennisPairingApp() {
                 <div className="flex items-start gap-3">
                   <span style={{ fontSize: '1.5rem', lineHeight: 1 }}>📅</span>
                   <div>
-                    <div className="text-sm font-bold" style={{ color: 'var(--court)' }}>Double-check the real CTA calendar</div>
+                    <div className="text-sm font-bold" style={{ color: 'var(--court)' }}>Check the real CTA calendar</div>
                     <div className="text-xs mt-1" style={{ color: 'var(--ink)' }}>
-                      Court numbers below are this app's best automatic guess — always confirm against the real calendar before you play, especially for USTA matches or pro lessons.
+                      Court numbers are assigned automatically, starting at 1. Confirm nothing else is
+                      booked before you play — especially pro lessons and USTA matches.
                     </div>
                     <a
                       href="https://www.coastsidetennis.com/court-schedule"
@@ -4129,103 +3987,58 @@ export default function TennisPairingApp() {
                 </div>
               </div>
 
-              {calendarStatus === 'loading' && (
-                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
-                  Checking the CTA calendar for real court bookings…
+              <div className="tp-card p-4">
+                <div className="text-sm font-semibold mb-1">Sets today</div>
+                <div className="text-xs mb-3" style={{ color: 'var(--muted)' }}>
+                  Split by sex runs women&apos;s and men&apos;s doubles where four of a sex are playing,
+                  and mixed where they aren&apos;t. Court numbers follow automatically.
                 </div>
-              )}
-              {calendarStatus === 'ready' && !sessionTime && (
-                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
-                  Set a time on Today to check these courts against real CTA calendar bookings.
-                </div>
-              )}
-              {calendarStatus === 'ready' && sessionTime && (
-                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
-                  {blockedCourtNumbers.size === 0
-                    ? 'Checked against the CTA calendar — no conflicts for this time.'
-                    : `Checked against the CTA calendar — court${blockedCourtNumbers.size === 1 ? '' : 's'} ${Array.from(blockedCourtNumbers).sort().join(', ')} booked during this time, skipped automatically.`}
-                </div>
-              )}
-              <div>
-                <div className="text-sm font-semibold mb-2">Courts this week</div>
-                <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
-                  Court count and format follow how many are marked playing on Today — {playingCount} playing sets up {assignedCourts.length === 0 ? 'no courts yet' : `${assignedCourts.length} court${assignedCourts.length === 1 ? '' : 's'}`} automatically. Court numbers default to 1 through 4 first, 5 and 6 only if needed — tap a number below to override it for every set this week. Need a one-off exception for just a single set instead? Use Results › Adjust.
-                </div>
+
                 <div className="space-y-2">
-                  {assignedCourts.map((c, i) => {
-                    const clash = assignedCourts.some((other, j) => j !== i && other.courtNumber !== null && other.courtNumber === c.courtNumber);
+                  {setFormats.map((fmt, i) => {
+                    const preview = courtsForSet(playingPlayers, fmt);
                     return (
-                      <div key={c.id} className="tp-card flex items-center gap-3 px-4 py-3">
-                        <select
-                          value={c.courtNumberOverride || ''}
-                          onChange={(e) => setCourtSlotOverride(c.id, e.target.value)}
-                          className="tp-focus tp-input font-bold text-sm bg-white px-1.5 py-1"
-                          style={{ color: clash || !c.courtNumber ? 'var(--warn)' : 'var(--court)', width: '4.5rem' }}
-                          aria-label={`Court number for row ${i + 1}`}
-                        >
-                          <option value="">{c.courtNumber || '—'}</option>
-                          {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
-                        </select>
-                        <div className="flex-1 text-sm font-medium">{c.format}</div>
-                        {!c.courtNumber && (
-                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ No court number left to assign</div>
-                        )}
-                        {clash && c.courtNumber && (
-                          <div className="text-xs w-full" style={{ color: 'var(--warn)' }}>⚠ Same court number used more than once below</div>
+                      <div key={i}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs shrink-0" style={{ color: 'var(--muted)', width: '2.8rem' }}>Set {i + 1}</span>
+                          <select
+                            value={fmt}
+                            onChange={(e) => setFormatForSet(i, e.target.value)}
+                            className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white"
+                            aria-label={`Format for set ${i + 1}`}
+                          >
+                            {Object.entries(SET_FORMAT_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {playingCount > 0 && (
+                          <div className="text-xs mt-1" style={{ color: 'var(--muted)', marginLeft: '3.3rem' }}>
+                            {describeSetCourts(preview)}
+                          </div>
                         )}
                       </div>
                     );
                   })}
-                  {courts.length === 0 && (
-                    <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>Mark people playing on Today to set up this week's courts.</div>
-                  )}
+                </div>
+
+                <div className="flex items-center gap-3 mt-4">
+                  <button type="button" onClick={() => setRoundsCount(setFormats.length - 1)} className="tp-focus w-8 h-8 rounded-full border font-bold" style={{ borderColor: 'var(--line)' }} aria-label="Fewer sets">−</button>
+                  <span className="text-sm" style={{ color: 'var(--muted)' }}>{setFormats.length} set{setFormats.length === 1 ? '' : 's'}</span>
+                  <button type="button" onClick={() => setRoundsCount(setFormats.length + 1)} className="tp-focus w-8 h-8 rounded-full border font-bold" style={{ borderColor: 'var(--line)' }} aria-label="More sets">+</button>
+                </div>
+
+                <div className="text-xs mt-3" style={{ color: 'var(--muted)' }}>
+                  Partners rotate after each set, balancing skill first, then avoiding repeats, then
+                  grouping similar competitive ratings on the same court, then sharing sit-outs fairly.
+                  Anyone with a firm court preference plays there every set.
                 </div>
               </div>
 
-              <div className="tp-card p-4">
-                <div className="text-sm font-semibold mb-2">Sets today</div>
-                <div className="flex items-center gap-3">
-                  <button type="button" onClick={() => setRoundsCount(rounds - 1)} className="tp-focus w-8 h-8 rounded-full border font-bold" style={{ borderColor: 'var(--line)' }} aria-label="Fewer sets">−</button>
-                  <span className="tp-display text-2xl font-bold w-8 text-center">{rounds}</span>
-                  <button type="button" onClick={() => setRoundsCount(rounds + 1)} className="tp-focus w-8 h-8 rounded-full border font-bold" style={{ borderColor: 'var(--line)' }} aria-label="More sets">+</button>
-                </div>
-                <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
-                  Partners rotate after each set, balancing skill first, then avoiding repeats, then mixed-doubles gender balance, then grouping similar competitive ratings on the same court, then fair sit-out rotation. Anyone with a firm court preference plays there every set.
-                </div>
-              </div>
-
-              <div className="tp-card p-4">
-                <button
-                  type="button"
-                  onClick={() => persistWeekly({ sameSexSet: !sameSexSet })}
-                  className="tp-focus w-full flex items-center gap-3 text-left"
-                >
-                  <span className="flex items-center justify-center shrink-0" style={{
-                    width: 20, height: 20, borderRadius: 6,
-                    border: sameSexSet ? 'none' : '2px solid var(--line)',
-                    background: sameSexSet ? 'var(--court)' : 'transparent',
-                  }}>
-                    {sameSexSet && <Check size={13} color="#fff" />}
-                  </span>
-                  <span className="flex-1 text-sm font-semibold">Split the second set by sex</span>
-                </button>
-                <div className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
-                  Set 2 runs as women's doubles and men's doubles wherever the numbers allow —
-                  women on the higher courts, men on the lower, anyone left over plays mixed as usual.
-                  Four of a sex are needed to make a court; short of that, nothing is split and the
-                  set is built like any other. Sets 1 and 3 are always mixed.
-                </div>
-              </div>
-
-              <div className="text-xs px-1" style={{ color: 'var(--muted)' }}>
-                {playingCount} playing this week · up to {neededPerRound} needed per set for this court setup
-                {playingCount > 0 && playingCount < neededPerRound ? ' — with fewer than that, sit-outs rotate fairly across the sets.' : ''}
-                {playingCount > neededPerRound ? ' — more than fits at once, so who sits out rotates set to set.' : ''}
-              </div>
-
-              {playingCount >= 1 && courts.length === 0 && (
+              {playingCount > 0 && !canGenerate && (
                 <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
-                  ⚠ {playingCount} playing isn't enough to fill a court (Doubles/Mixed need 4, Singles needs 2, and a lone leftover of 1 or 3 can't fill anything on its own). Mark more people playing to enable pairing.
+                  ⚠ {playingCount} playing isn&apos;t enough to fill a court — doubles needs 4, singles needs 2.
+                  Mark more people playing to enable pairing.
                 </div>
               )}
 
