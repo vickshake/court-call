@@ -1,0 +1,11 @@
+# Court Call is a private tool for one tennis club.
+#
+# It holds member names and playing schedules. None of that belongs in a search
+# index, so every crawler is asked to stay out of the whole site.
+#
+# This file is only half the control: robots.txt asks crawlers not to FETCH a page,
+# but a page can still be indexed if something else links to it. The noindex meta
+# tag in index.html is what actually keeps it out of results. Both are in place.
+
+User-agent: *
+Disallow: /

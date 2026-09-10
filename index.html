@@ -6,6 +6,13 @@
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#1E5631" />
+
+    <!-- Court Call holds member names and weekly playing times. None of that belongs in
+         a search index. robots.txt asks crawlers not to fetch the site; this tag is what
+         actually keeps it out of results, including when something else links here. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="googlebot" content="noindex, nofollow" />
+
     <title>Court Call</title>
   </head>
   <body>
