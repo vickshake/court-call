@@ -3,6 +3,9 @@
 # It holds member names and playing schedules. None of that belongs in a search
 # index, so every crawler is asked to stay out of the whole site.
 #
+# The trailing slash below is load-bearing. "Disallow: /" blocks the whole site.
+# "Disallow:" with nothing after it means the OPPOSITE - allow everything.
+#
 # This file is only half the control: robots.txt asks crawlers not to FETCH a page,
 # but a page can still be indexed if something else links to it. The noindex meta
 # tag in index.html is what actually keeps it out of results. Both are in place.
