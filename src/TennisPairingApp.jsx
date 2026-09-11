@@ -960,7 +960,25 @@ function summarizeTelemetry(records, now) {
   });
 
   const tabTotal = Object.values(tabs).reduce((a, b) => a + b, 0);
+
+  // Pairing quality. The denominator is first-time generations, not re-rolls: a re-roll
+  // replaces a draft rather than producing an additional session.
+  const generated = actions.generate || 0;
+  const rerolled = actions.reroll || 0;
+  const touched = Math.min(actions.session_touched || 0, generated);
+  const edits = (actions.player_swap || 0) + (actions.court_change || 0);
+
   return {
+    generated,
+    rerolled,
+    touched,
+    untouched: Math.max(0, generated - touched),
+    untouchedPct: generated > 0 ? Math.round(((generated - touched) / generated) * 100) : null,
+    edits,
+    swaps: actions.player_swap || 0,
+    courtChanges: actions.court_change || 0,
+    adjustOpened: actions.adjust_open || 0,
+    editsPerSession: generated > 0 ? edits / generated : 0,
     browsers: records.length, active7, visits, engagementMs, lastSeen,
     mobile, desktop, installed, tabs, actions, tabTotal,
     avgVisitMs: visits > 0 ? Math.round(engagementMs / visits) : 0,
@@ -1505,6 +1523,11 @@ export default function TennisPairingApp() {
 
   /* ---- usage telemetry recording ---- */
   const telemetryRef = useRef({ tabs: {}, actions: {}, engagementMs: 0, visits: 0, dirty: false });
+  // One schedule counts as "touched" at most once, however many times it's adjusted.
+  // Raw adjustment counts are noisy - a single fiddly session with four swaps would
+  // otherwise outweigh four clean ones. This is the honest denominator.
+  const scheduleTouchedRef = useRef(false);
+  const recordActionRef = useRef(() => {});
   const engagementAnchorRef = useRef(Date.now());
 
   // Accrues time only while the page is visible AND recently interacted with, so a tab
@@ -1521,6 +1544,16 @@ export default function TennisPairingApp() {
     telemetryRef.current.dirty = true;
   }, []);
 
+  // Called by every adjustment path. Records the adjustment itself every time, and the
+  // session as touched only on the first one.
+  const recordAdjustment = useCallback((name) => {
+    recordActionRef.current(name);
+    if (!scheduleTouchedRef.current) {
+      scheduleTouchedRef.current = true;
+      recordActionRef.current('session_touched');
+    }
+  }, []);
+
   const recordAction = useCallback((name) => {
     trackEvent(name);
     if (!TELEMETRY_KEY) return;
@@ -1528,6 +1561,8 @@ export default function TennisPairingApp() {
     t.actions[name] = (t.actions[name] || 0) + 1;
     t.dirty = true;
   }, []);
+
+  useEffect(() => { recordActionRef.current = recordAction; }, [recordAction]);
 
   const recordTab = useCallback((name) => {
     // GA sees a single-page app with no router, so a tab switch would otherwise be
@@ -1938,13 +1973,21 @@ export default function TennisPairingApp() {
   // last-write-wins overwriting this whole change exists to remove.
   function adoptSessionCopy(entry) {
     const src = (entry && entry.state) || {};
+    // Set formats must come across with the schedule. Without them the copied pairings
+    // would be shown alongside this browser's own format choices, so regenerating would
+    // silently produce a different session than the one that was copied.
+    // `rounds` and `setFormats` are kept consistent: a sheet saved before formats moved
+    // onto sets carries only a count, so the club's usual shape is rebuilt from it.
+    const formats = Array.isArray(src.setFormats) && src.setFormats.length
+      ? src.setFormats
+      : defaultSetFormats(src.rounds || 3);
     persistWeekly({
       playingIds: src.playingIds || [],
-      courts: src.courts || [],
       sessionDate: src.sessionDate && src.sessionDate >= todayISO() ? src.sessionDate : todayISO(),
       sessionTime: src.sessionTime || '',
       sessionDuration: src.sessionDuration || '',
-      rounds: src.rounds || 3,
+      rounds: formats.length,
+      setFormats: formats,
       schedule: src.schedule || null,
     });
     setShowOtherSessions(false);
@@ -2304,7 +2347,10 @@ export default function TennisPairingApp() {
   }
 
   function handleGenerate() {
-    recordAction('generate');
+    // Regenerating over an existing schedule is a re-roll: the entire draft was rejected,
+    // not one pairing within it. Counted separately for exactly that reason.
+    recordAction(schedule ? 'reroll' : 'generate');
+    scheduleTouchedRef.current = false; // a fresh draft starts untouched
     const players = directory.filter((p) => playingIds.includes(p.id));
     const result = generateSchedule(players, setFormats);
     persistWeekly({ schedule: result });
@@ -2355,6 +2401,7 @@ export default function TennisPairingApp() {
       setSelectedPlayerId(null);
       return;
     }
+    recordAdjustment('player_swap');
     const ri = editingRoundIndex;
     const newRound = swapPlayersInRound(schedule.rounds[ri], selectedPlayerId, playerId);
     const newRounds = schedule.rounds.map((r, i) => (i === ri ? newRound : r));
@@ -2363,6 +2410,7 @@ export default function TennisPairingApp() {
   }
 
   function setCourtNumberOverride(roundIndex, matchIndex, newCourtNumber) {
+    recordAdjustment('court_change');
     const round = schedule.rounds[roundIndex];
     const newMatches = round.matches.map((m, i) => (i === matchIndex ? { ...m, courtNumber: newCourtNumber } : m));
     const newRounds = schedule.rounds.map((r, i) => (i === roundIndex ? { ...r, matches: newMatches } : r));
@@ -3456,6 +3504,66 @@ export default function TennisPairingApp() {
                         return (
                           <>
                             <div className="tp-card px-4 py-3">
+                              <div className="text-xs font-semibold mb-1">Pairing quality</div>
+                              <div className="text-xs mb-2.5" style={{ color: 'var(--muted)' }}>
+                                How often a generated sheet goes out as-is, versus needing a hand.
+                              </div>
+
+                              {t.generated === 0 ? (
+                                <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                                  Nothing generated yet. This starts counting from v0.62.0 — earlier
+                                  sessions left no record of being adjusted.
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="text-xs font-semibold mb-1">Sheets that needed no changes</div>
+                                  <div className="flex items-baseline gap-2">
+                                    <span className="tp-display text-2xl font-bold" style={{ color: 'var(--court)' }}>{t.untouched}</span>
+                                    <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                                      of {t.generated} session{t.generated === 1 ? '' : 's'}
+                                      {t.untouchedPct !== null ? ` · ${t.untouchedPct}%` : ''}
+                                    </span>
+                                  </div>
+                                  <div className="mt-1.5 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--line)' }}>
+                                    <div style={{ width: `${t.untouchedPct || 0}%`, height: '100%', background: 'var(--court)' }} />
+                                  </div>
+
+                                  <div className="flex gap-2 mt-2.5">
+                                    <div className="flex-1 tp-input px-2.5 py-2">
+                                      <div className="tp-display text-lg font-bold" style={{ color: 'var(--court)' }}>{t.editsPerSession.toFixed(1)}</div>
+                                      <div className="text-xs" style={{ color: 'var(--muted)' }}>adjustments per session</div>
+                                    </div>
+                                    <div className="flex-1 tp-input px-2.5 py-2">
+                                      <div className="tp-display text-lg font-bold" style={{ color: 'var(--court)' }}>{t.rerolled}</div>
+                                      <div className="text-xs" style={{ color: 'var(--muted)' }}>sheets re-rolled entirely</div>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-2.5 space-y-1">
+                                    <div className="flex items-center justify-between text-xs">
+                                      <span style={{ color: 'var(--muted)' }}>Players swapped</span>
+                                      <span className="font-semibold">{t.swaps}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-xs">
+                                      <span style={{ color: 'var(--muted)' }}>Court numbers changed</span>
+                                      <span className="font-semibold">{t.courtChanges}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-xs">
+                                      <span style={{ color: 'var(--muted)' }}>Adjust opened</span>
+                                      <span className="font-semibold">{t.adjustOpened}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="text-xs mt-2.5 px-2.5 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                                    A swap doesn't always mean the pairing was wrong — someone arriving
+                                    late or leaving early looks the same in the data. Useful as a trend,
+                                    not a verdict on any one session.
+                                  </div>
+                                </>
+                              )}
+                            </div>
+
+                            <div className="tp-card px-4 py-3">
                               <div className="text-xs font-semibold mb-1.5">Time in the app</div>
                               <div className="flex items-baseline gap-4 flex-wrap">
                                 <div>
@@ -4060,7 +4168,11 @@ export default function TennisPairingApp() {
                     <div className="tp-display text-lg font-bold" style={{ color: 'var(--court)' }}>SET {ri + 1}</div>
                     <button
                       type="button"
-                      onClick={() => { setEditingRoundIndex(editingRoundIndex === ri ? null : ri); setSelectedPlayerId(null); }}
+                      onClick={() => {
+                        if (editingRoundIndex !== ri) recordAction('adjust_open');
+                        setEditingRoundIndex(editingRoundIndex === ri ? null : ri);
+                        setSelectedPlayerId(null);
+                      }}
                       className="tp-focus text-xs px-3 py-1 rounded-full font-semibold"
                       style={{
                         background: editingRoundIndex === ri ? 'var(--court)' : 'var(--court-tint)',
