@@ -21,12 +21,24 @@ function pairKey(a, b) {
   return [a, b].sort().join('~');
 }
 
+// CTA is the club's own rating and applies to everyone, so it leads. USTA is the
+// fallback for anyone the club hasn't rated yet - plenty of members don't play USTA at
+// all, and rating half the club on an external scale and half on an internal one means
+// the two halves were never calibrated against each other.
+//
+// This was the other way round until v0.65.0, which made the CTA field inert for anyone
+// holding a USTA rating: edits to it changed nothing.
 function effSkill(p) {
-  return (p.usta !== null && p.usta !== undefined) ? p.usta : p.cta;
+  if (p.cta !== null && p.cta !== undefined && p.cta !== '') return Number(p.cta);
+  if (p.usta !== null && p.usta !== undefined) return Number(p.usta);
+  return 3.5; // last resort, so a half-filled record can't produce NaN downstream
 }
 
-function hasUsta(p) {
-  return p.usta !== null && p.usta !== undefined;
+// Which rating is actually driving pairing, for labelling the chip honestly.
+function ratingSource(p) {
+  if (p.cta !== null && p.cta !== undefined && p.cta !== '') return 'CTA';
+  if (p.usta !== null && p.usta !== undefined) return 'USTA';
+  return 'CTA';
 }
 
 function avgSkill(ids, playerMap) {
@@ -72,6 +84,34 @@ function competitiveSpread(ids, playerMap) {
   return Math.max(...vals) - Math.min(...vals);
 }
 
+// Serving is deliberately NOT folded into a player's skill figure - a strong serve is
+// already part of why someone is rated where they are, so adding it there would count it
+// twice. What a rating cannot express is a property of the PAIR: two weak servers
+// together struggle to hold serve however well they rally, and average rating is blind
+// to that. So it is scored on team composition instead.
+const WEAK_SERVE_MAX = 2; // 1-2 on the five-point scale
+
+function teamServeAvg(ids, playerMap) {
+  const vals = ids.map((id) => playerMap[id].serving).filter((v) => v !== null && v !== undefined && v !== '');
+  if (!vals.length) return null; // unrated - skipped rather than defaulted
+  return vals.reduce((a, b) => a + Number(b), 0) / vals.length;
+}
+
+function servingCost(teamA, teamB, playerMap) {
+  const a = teamServeAvg(teamA, playerMap);
+  const b = teamServeAvg(teamB, playerMap);
+  let cost = 0;
+  // One side clearly out-serving the other.
+  if (a !== null && b !== null) cost += Math.abs(a - b) * 2;
+  // Both servers weak on the same side - the case average rating cannot see.
+  [teamA, teamB].forEach((team) => {
+    if (team.length < 2) return;
+    const vals = team.map((id) => playerMap[id].serving).filter((v) => v !== null && v !== undefined && v !== '');
+    if (vals.length === 2 && vals.every((v) => Number(v) <= WEAK_SERVE_MAX)) cost += 2;
+  });
+  return cost;
+}
+
 function repeatCost(partnerHist, opponentHist, teamA, teamB) {
   let cost = 0;
   if (teamA.length === 2) cost += (partnerHist[pairKey(teamA[0], teamA[1])] || 0) * 3;
@@ -93,7 +133,8 @@ function bestDoublesSplit(chosen, partnerHist, opponentHist, playerMap) {
   let bestC = Infinity;
   options.forEach((opt) => {
     const c = matchImbalance(opt.teamA, opt.teamB, playerMap) * 10 +
-      repeatCost(partnerHist, opponentHist, opt.teamA, opt.teamB);
+      repeatCost(partnerHist, opponentHist, opt.teamA, opt.teamB) +
+      servingCost(opt.teamA, opt.teamB, playerMap);
     if (c < bestC) { bestC = c; best = opt; }
   });
   return best;
@@ -105,9 +146,11 @@ function bestMixedSplit(men, women, partnerHist, opponentHist, playerMap) {
   const optA = { teamA: [m1, w1], teamB: [m2, w2] };
   const optB = { teamA: [m1, w2], teamB: [m2, w1] };
   const cA = matchImbalance(optA.teamA, optA.teamB, playerMap) * 10 +
-    repeatCost(partnerHist, opponentHist, optA.teamA, optA.teamB);
+    repeatCost(partnerHist, opponentHist, optA.teamA, optA.teamB) +
+    servingCost(optA.teamA, optA.teamB, playerMap);
   const cB = matchImbalance(optB.teamA, optB.teamB, playerMap) * 10 +
-    repeatCost(partnerHist, opponentHist, optB.teamA, optB.teamB);
+    repeatCost(partnerHist, opponentHist, optB.teamA, optB.teamB) +
+    servingCost(optB.teamA, optB.teamB, playerMap);
   return cA <= cB ? optA : optB;
 }
 
@@ -302,6 +345,7 @@ function buildRound(availableIds, courtSlots, partnerHist, opponentHist, sitOutC
       score += matchImbalance(m.teamA, m.teamB, playerMap) * 10;
       score += repeatCost(partnerHist, opponentHist, m.teamA, m.teamB) * 3;
       score += competitiveSpread(all, playerMap) * 2;
+      score += servingCost(m.teamA, m.teamB, playerMap);
     });
     const playingIds = availableIds.filter((id) => used.has(id));
     const avgSitOutPlaying = playingIds.reduce((s, id) => s + (sitOutCount[id] || 0), 0) /
@@ -1218,7 +1262,7 @@ function PlayerToggleRow({ p, playing, onToggle }) {
       <span className={`text-xs font-bold px-2 py-1 rounded-md tp-chip-${p.sex}`}>{p.sex}</span>
       <span className="flex-1 font-medium text-sm truncate">{p.name}</span>
       <span className="text-xs px-2 py-1 rounded-md font-medium whitespace-nowrap" style={{ background: '#F1F1EE', color: 'var(--muted)' }}>
-        {effSkill(p).toFixed(1)} {hasUsta(p) ? 'USTA' : 'CTA'}
+        {effSkill(p).toFixed(1)} {ratingSource(p)}
       </span>
     </button>
   );
@@ -3144,6 +3188,10 @@ export default function TennisPairingApp() {
                       onChange={(e) => setForm({ ...form, cta: e.target.value })}
                       className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white"
                     />
+                    <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                      The club's own rating, and what pairing uses. Any value works — 3.7 is fine,
+                      it isn't limited to half steps.
+                    </div>
                   </div>
 
                   {!showMoreFields ? (
@@ -3158,21 +3206,6 @@ export default function TennisPairingApp() {
                           <option value="">No USTA rating</option>
                           {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)}</option>)}
                         </select>
-                      </div>
-                      <div>
-                        <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Birth year</label>
-                        <input
-                          value={form.birthYear}
-                          onChange={(e) => setForm({ ...form, birthYear: e.target.value })}
-                          placeholder="e.g. 1980"
-                          inputMode="numeric"
-                          className="tp-focus tp-input w-full px-3 py-2 text-sm"
-                        />
-                        <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
-                          {form.birthYear && !Number.isNaN(Number(form.birthYear))
-                            ? `Age updates on its own — currently ${THIS_YEAR - Number(form.birthYear)}`
-                            : 'Stored as birth year so age never goes stale'}
-                        </div>
                       </div>
                       <div className="flex gap-2">
                         <div className="flex-1">
@@ -3203,7 +3236,6 @@ export default function TennisPairingApp() {
                           <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>Serve strength — reference only</div>
                         </div>
                       </div>
-                      <input value={form.injuries} onChange={(e) => setForm({ ...form, injuries: e.target.value })} placeholder="Injuries (optional)" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                       <input value={form.comments} onChange={(e) => setForm({ ...form, comments: e.target.value })} placeholder="Comments/suggestions (optional)" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                       <div>
                         <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Preferred court</label>
@@ -3969,41 +4001,39 @@ export default function TennisPairingApp() {
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="1.0"
-                            max="7.0"
-                            value={editForm.cta}
-                            onChange={(e) => setEditForm({ ...editForm, cta: e.target.value })}
-                            placeholder="CTA"
-                            className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white"
-                          />
-                          <select value={editForm.usta} onChange={(e) => setEditForm({ ...editForm, usta: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white">
-                            <option value="">No USTA</option>
-                            {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)} USTA</option>)}
-                          </select>
+                          <div className="flex-1">
+                            <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>CTA rating</label>
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="1.0"
+                              max="7.0"
+                              value={editForm.cta}
+                              onChange={(e) => setEditForm({ ...editForm, cta: e.target.value })}
+                              placeholder="e.g. 3.7"
+                              className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>USTA rating</label>
+                            <select value={editForm.usta} onChange={(e) => setEditForm({ ...editForm, usta: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
+                              <option value="">None</option>
+                              {SKILL_OPTIONS.map((v) => <option key={v} value={v}>{v.toFixed(1)}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="text-xs -mt-1" style={{ color: 'var(--muted)' }}>
+                          Pairing uses the CTA rating. USTA is only used for anyone without one, and
+                          is free-form on CTA — any value, not just half steps.
                         </div>
                         <div className="flex gap-2 items-center">
-                          <input
-                            value={editForm.birthYear}
-                            onChange={(e) => setEditForm({ ...editForm, birthYear: e.target.value })}
-                            placeholder="Birth year"
-                            inputMode="numeric"
-                            className="tp-focus tp-input flex-1 px-3 py-2 text-sm"
-                          />
-                          <span className="text-xs flex-1" style={{ color: 'var(--muted)' }}>
-                            {editForm.birthYear && !Number.isNaN(Number(editForm.birthYear))
-                              ? `Age ${THIS_YEAR - Number(editForm.birthYear)}`
-                              : 'No birth year set'}
-                          </span>
                           <button
                             type="button"
                             onClick={() => setEditForm({ ...editForm, active: !editForm.active })}
                             className="tp-focus text-xs px-3 py-2 rounded-md font-semibold whitespace-nowrap"
                             style={{ background: editForm.active ? 'var(--court-tint)' : '#F1F1EE', color: editForm.active ? 'var(--court)' : 'var(--muted)' }}
                           >
-                            {editForm.active ? 'Active' : 'Inactive'}
+                            {editForm.active ? 'Active member' : 'Inactive'}
                           </button>
                         </div>
                         <div className="flex gap-2">
@@ -4026,7 +4056,6 @@ export default function TennisPairingApp() {
                         <div className="text-xs -mt-2" style={{ color: 'var(--muted)' }}>
                           Competitive: how much they play to win, affects pairing. Serving: serve strength, reference only.
                         </div>
-                        <input value={editForm.injuries} onChange={(e) => setEditForm({ ...editForm, injuries: e.target.value })} placeholder="Injuries" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                         <input value={editForm.comments} onChange={(e) => setEditForm({ ...editForm, comments: e.target.value })} placeholder="Comments/suggestions" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                         <select value={editForm.preferredCourt} onChange={(e) => setEditForm({ ...editForm, preferredCourt: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
                           <option value="">No court preference</option>
@@ -4043,11 +4072,13 @@ export default function TennisPairingApp() {
                           <span className={`text-xs font-bold px-2 py-1 rounded-md tp-chip-${p.sex}`}>{p.sex}</span>
                           <span className="flex-1 font-medium text-sm truncate min-w-[80px]">{p.name}</span>
                           <span className="text-xs px-2 py-1 rounded-md font-medium whitespace-nowrap" style={{ background: '#F1F1EE', color: 'var(--muted)' }}>
-                            {effSkill(p).toFixed(1)} {hasUsta(p) ? 'USTA' : 'CTA'}
+                            {effSkill(p).toFixed(1)} {ratingSource(p)}
                           </span>
-                          {hasUsta(p) && p.cta != null && (
+                          {p.usta != null && p.cta != null && (
+                            // Shown because CTA drives pairing - without this, a USTA rating
+                            // would be invisible on the list despite being recorded.
                             <span className="text-xs px-2 py-1 rounded-md whitespace-nowrap" style={{ background: '#F1F1EE', color: 'var(--muted)', opacity: 0.75 }}>
-                              {Number(p.cta).toFixed(1)} CTA
+                              {Number(p.usta).toFixed(1)} USTA
                             </span>
                           )}
                           <button type="button" onClick={() => startEdit(p)} className="tp-focus" style={{ color: 'var(--muted)' }} aria-label={`Edit ${p.name}`}>
@@ -4061,7 +4092,6 @@ export default function TennisPairingApp() {
                           {p.handedness && <span>{p.handedness === 'L' ? 'Lefty' : 'Righty'}</span>}
                           <span>Competitive {p.competitive}/5</span>
                           {p.serving != null && <span>Serve {p.serving}/5</span>}
-                          {p.birthYear != null && <span>Age {THIS_YEAR - p.birthYear}</span>}
                           {p.preferredCourt != null && (
                             <span style={{ color: 'var(--clay)' }}>
                               Always Court {p.preferredCourt}
@@ -4071,10 +4101,9 @@ export default function TennisPairingApp() {
                             {p.active ? 'Active member' : 'Inactive — tap to reactivate'}
                           </button>
                         </div>
-                        {(p.injuries || p.comments) && (
-                          <div className="mt-1.5 pl-9 text-xs italic" style={{ color: 'var(--clay)' }}>
-                            {p.injuries && <div>{p.injuries}</div>}
-                            {p.comments && <div style={{ color: 'var(--muted)' }}>{p.comments}</div>}
+                        {p.comments && (
+                          <div className="mt-1.5 pl-9 text-xs italic" style={{ color: 'var(--muted)' }}>
+                            {p.comments}
                           </div>
                         )}
                       </>
@@ -4152,8 +4181,10 @@ export default function TennisPairingApp() {
 
                 <div className="text-xs mt-3" style={{ color: 'var(--muted)' }}>
                   Partners rotate after each set, balancing skill first, then avoiding repeats, then
-                  grouping similar competitive ratings on the same court, then sharing sit-outs fairly.
-                  Anyone with a firm court preference plays there every set.
+                  grouping similar competitive ratings on the same court, then evening out serving
+                  across the two teams, then sharing sit-outs fairly. Skill means the CTA rating, with
+                  USTA used only for anyone without one. Anyone with a firm court preference plays
+                  there every set.
                 </div>
               </div>
 
@@ -4211,8 +4242,8 @@ export default function TennisPairingApp() {
                       const recordId = `${sessionDate}-set${ri + 1}-court${court}-${matchIdentity(m.teamA, m.teamB)}`;
                       const isCelebrating = celebratingMatchId === recordId;
                       const upset = winner ? isUpset({ teamA: m.teamA, teamB: m.teamB, winner }, schedule.playerMap) : false;
-                      const notesA = m.teamA.map((id) => schedule.playerMap[id]).filter((pl) => pl.injuries || pl.comments);
-                      const notesB = m.teamB.map((id) => schedule.playerMap[id]).filter((pl) => pl.injuries || pl.comments);
+                      const notesA = m.teamA.map((id) => schedule.playerMap[id]).filter((pl) => pl.comments);
+                      const notesB = m.teamB.map((id) => schedule.playerMap[id]).filter((pl) => pl.comments);
                       const editing = editingRoundIndex === ri;
                       const feedback = editing ? matchFeedback(m, schedule.rounds, ri, schedule.playerMap) : null;
                       const otherCourtNumbers = round.matches.filter((_, i) => i !== mi).map((om, omi) => String(om.courtNumber || (omi + 1)));
@@ -4304,7 +4335,7 @@ export default function TennisPairingApp() {
                           )}
                           {(notesA.length > 0 || notesB.length > 0) && (
                             <div className="mt-2 text-xs italic" style={{ color: 'var(--muted)' }}>
-                              {[...notesA, ...notesB].map((pl) => `${pl.name}: ${[pl.injuries, pl.comments].filter(Boolean).join(' — ')}`).join(' · ')}
+                              {[...notesA, ...notesB].map((pl) => `${pl.name}: ${pl.comments}`).join(' · ')}
                             </div>
                           )}
                           {!editing && (
