@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, Trash2, RefreshCw, X, Loader2, Shuffle, Upload, Download, Pencil, Check, RotateCcw, Lock, Settings } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, X, Loader2, Shuffle, Upload, Download, Pencil, Check, RotateCcw, Lock, Settings, Info } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 /* ================= pairing engine ================= */
@@ -1237,34 +1237,52 @@ function formatSessionDateTime(iso, hhmm, durationMins) {
   return `${datePart}, ${startPart} - ${endPart}`;
 }
 
-function PlayerToggleRow({ p, playing, onToggle }) {
+// The row used to be one big button with the rating printed on the right. The rating has
+// moved behind the info control: a number beside somebody's name, on a screen anyone can
+// open, reads as a public ranking. It is one tap away instead of on display.
+//
+// Structurally this is now a div containing two buttons rather than one button, because a
+// button cannot be nested inside another. The toggle still covers nearly the whole row, so
+// marking someone in is the same gesture it always was.
+function PlayerToggleRow({ p, playing, onToggle, onInfo }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="tp-focus w-full flex items-center gap-3 px-4 py-3 text-left"
+    <div
+      className="w-full flex items-center"
       style={{
         borderRadius: 14,
         border: playing ? '2px solid var(--court)' : '1px solid var(--line)',
         background: playing ? 'var(--court-tint)' : 'var(--surface)',
       }}
     >
-      <span
-        className="flex items-center justify-center shrink-0"
-        style={{
-          width: 22, height: 22, borderRadius: 7,
-          border: playing ? 'none' : '2px solid var(--line)',
-          background: playing ? 'var(--court)' : 'transparent',
-        }}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="tp-focus flex-1 flex items-center gap-3 px-4 py-3 text-left min-w-0"
+        style={{ background: 'transparent', borderRadius: 14 }}
       >
-        {playing && <Check size={14} color="#fff" />}
-      </span>
-      <span className={`text-xs font-bold px-2 py-1 rounded-md tp-chip-${p.sex}`}>{p.sex}</span>
-      <span className="flex-1 font-medium text-sm truncate">{p.name}</span>
-      <span className="text-xs px-2 py-1 rounded-md font-medium whitespace-nowrap" style={{ background: '#F1F1EE', color: 'var(--muted)' }}>
-        {effSkill(p).toFixed(1)} {ratingSource(p)}
-      </span>
-    </button>
+        <span
+          className="flex items-center justify-center shrink-0"
+          style={{
+            width: 22, height: 22, borderRadius: 7,
+            border: playing ? 'none' : '2px solid var(--line)',
+            background: playing ? 'var(--court)' : 'transparent',
+          }}
+        >
+          {playing && <Check size={14} color="#fff" />}
+        </span>
+        <span className={`text-xs font-bold px-2 py-1 rounded-md tp-chip-${p.sex}`}>{p.sex}</span>
+        <span className="flex-1 font-medium text-sm truncate">{p.name}</span>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onInfo(p.id); }}
+        className="tp-focus shrink-0 px-3 py-3"
+        style={{ color: 'var(--muted)', background: 'transparent' }}
+        aria-label={`Details for ${p.name}`}
+      >
+        <Info size={16} />
+      </button>
+    </div>
   );
 }
 
@@ -1470,6 +1488,7 @@ export default function TennisPairingApp() {
   const [pendingImport, setPendingImport] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [restoreConfirmId, setRestoreConfirmId] = useState(null);
+  const [detailPlayerId, setDetailPlayerId] = useState(null);
   const [exportPrompt, setExportPrompt] = useState(false);
   const [isBrave, setIsBrave] = useState(false);
   const [importSkipIds, setImportSkipIds] = useState(new Set());
@@ -3285,7 +3304,7 @@ export default function TennisPairingApp() {
                     ) : (
                       <div className="space-y-2">
                         {playingTodayList.map((p) => (
-                          <PlayerToggleRow key={p.id} p={p} playing onToggle={() => togglePlaying(p.id)} />
+                          <PlayerToggleRow key={p.id} p={p} playing onToggle={() => togglePlaying(p.id)} onInfo={setDetailPlayerId} />
                         ))}
                       </div>
                     )}
@@ -3298,7 +3317,7 @@ export default function TennisPairingApp() {
                     ) : (
                       <div className="space-y-2">
                         {notPlayingTodayList.map((p) => (
-                          <PlayerToggleRow key={p.id} p={p} playing={false} onToggle={() => togglePlaying(p.id)} />
+                          <PlayerToggleRow key={p.id} p={p} playing={false} onToggle={() => togglePlaying(p.id)} onInfo={setDetailPlayerId} />
                         ))}
                       </div>
                     )}
@@ -3312,7 +3331,7 @@ export default function TennisPairingApp() {
                       {showInactiveToday && (
                         <div className="space-y-2 mt-2">
                           {inactiveTodayFiltered.map((p) => (
-                            <PlayerToggleRow key={p.id} p={p} playing={playingIds.includes(p.id)} onToggle={() => togglePlaying(p.id)} />
+                            <PlayerToggleRow key={p.id} p={p} playing={playingIds.includes(p.id)} onToggle={() => togglePlaying(p.id)} onInfo={setDetailPlayerId} />
                           ))}
                         </div>
                       )}
@@ -4248,6 +4267,8 @@ export default function TennisPairingApp() {
                       const feedback = editing ? matchFeedback(m, schedule.rounds, ri, schedule.playerMap) : null;
                       const otherCourtNumbers = round.matches.filter((_, i) => i !== mi).map((om, omi) => String(om.courtNumber || (omi + 1)));
                       const courtClash = editing && otherCourtNumbers.includes(court);
+                      // Adjusting: a tap selects for a swap, as before. Not adjusting: a tap
+                      // opens that player's detail, which is where ratings now live.
                       const renderTeam = (team, align) => editing ? (
                         <div className={`flex flex-wrap gap-1 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
                           {team.map((id) => (
@@ -4266,8 +4287,20 @@ export default function TennisPairingApp() {
                           ))}
                         </div>
                       ) : (
-                        <div className={`font-semibold text-sm ${align === 'right' ? 'text-right' : 'text-left'}`}>
-                          {team.map((id) => schedule.playerMap[id].name + (winStreaks[id] >= 3 ? ' 🔥' : '')).join(' & ')}
+                        <div className={`flex flex-wrap gap-x-1 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
+                          {team.map((id, ti) => (
+                            <React.Fragment key={id}>
+                              {ti > 0 && <span className="font-semibold text-sm" style={{ color: 'var(--muted)' }}>&amp;</span>}
+                              <button
+                                type="button"
+                                onClick={() => setDetailPlayerId(id)}
+                                className="tp-focus font-semibold text-sm"
+                                style={{ background: 'transparent', textDecorationLine: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: '2px', textDecorationColor: 'var(--line)' }}
+                              >
+                                {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ' 🔥' : ''}
+                              </button>
+                            </React.Fragment>
+                          ))}
                         </div>
                       );
                       return (
@@ -4536,6 +4569,73 @@ export default function TennisPairingApp() {
               </button>
             </div>
           )}
+
+          {detailPlayerId && (() => {
+            // Built from the directory rather than the schedule's snapshot, so it reflects any
+            // edit made since the pairings were generated.
+            const dp = directory.find((x) => x.id === detailPlayerId)
+              || (schedule && schedule.playerMap ? schedule.playerMap[detailPlayerId] : null);
+            if (!dp) return null;
+            const rec = records[dp.id];
+            const streak = winStreaks[dp.id] || 0;
+            return (
+              <div
+                className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
+                style={{ background: 'rgba(0,0,0,0.4)' }}
+                onClick={() => setDetailPlayerId(null)}
+              >
+                <div className="tp-card w-full max-w-xs p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-bold px-2 py-1 rounded-md tp-chip-${dp.sex}`}>{dp.sex}</span>
+                    <span className="flex-1 font-semibold text-sm">{dp.name}</span>
+                    <button type="button" onClick={() => setDetailPlayerId(null)} className="tp-focus" style={{ color: 'var(--muted)' }} aria-label="Close">
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <div className="flex-1 tp-input px-3 py-2">
+                      <div className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>
+                        {dp.cta != null && dp.cta !== '' ? Number(dp.cta).toFixed(1) : '—'}
+                      </div>
+                      <div className="text-xs" style={{ color: 'var(--muted)' }}>CTA</div>
+                    </div>
+                    <div className="flex-1 tp-input px-3 py-2">
+                      <div className="tp-display text-xl font-bold" style={{ color: 'var(--muted)' }}>
+                        {dp.usta != null ? Number(dp.usta).toFixed(1) : '—'}
+                      </div>
+                      <div className="text-xs" style={{ color: 'var(--muted)' }}>USTA</div>
+                    </div>
+                  </div>
+                  <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                    Pairing uses the CTA rating{dp.cta == null || dp.cta === '' ? ', or USTA where there isn\u2019t one' : ''}.
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs">
+                    <span style={{ color: 'var(--muted)' }}>Competitive</span>
+                    <span className="font-semibold">{dp.competitive != null ? `${dp.competitive}/5` : '—'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span style={{ color: 'var(--muted)' }}>Serve</span>
+                    <span className="font-semibold">{dp.serving != null && dp.serving !== '' ? `${dp.serving}/5` : 'not rated'}</span>
+                  </div>
+
+                  <div className="pt-1" style={{ borderTop: '1px solid var(--line)' }}>
+                    {rec && (rec.wins + rec.losses) > 0 ? (
+                      <div className="flex items-baseline gap-2 pt-2">
+                        <span className="tp-display text-xl font-bold" style={{ color: 'var(--court)' }}>{rec.wins}&ndash;{rec.losses}</span>
+                        <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                          logged{streak >= 3 ? ` \u00b7 ${streak} in a row \ud83d\udd25` : ''}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="text-xs pt-2" style={{ color: 'var(--muted)' }}>No results logged yet.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {feedbackOpen && (
             <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={closeFeedback}>
