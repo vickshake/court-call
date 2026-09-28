@@ -1098,6 +1098,29 @@ const DEFAULT_PIN = '1234';
 function isStandalone() {
   return typeof window !== 'undefined' && window.__CC_STANDALONE__ === true;
 }
+/* ---- rating scales ----------------------------------------------------------
+   Short labels sit in the dropdowns, where the choice is actually made. The longer
+   descriptions sit behind a link next to them.
+
+   Both describe what a rater would OBSERVE on court rather than judging a person -
+   easier to apply consistently between two raters, and it reads less like a character
+   assessment if anyone ever sees it.                                                */
+const COMPETITIVE_SCALE = [
+  { v: 1, short: 'Here for the hit', long: "Turns up for the exercise and the company. Doesn't track the score closely and won't mind how it ends." },
+  { v: 2, short: 'Easy-going', long: 'Plays properly but keeps it light. Gives the benefit of the doubt on close calls.' },
+  { v: 3, short: 'Plays to win', long: 'Wants to win the set, shakes off losing it. Where most of the club sits.' },
+  { v: 4, short: 'Contests every point', long: 'Sharp on the score, chases balls others let go, wants a real match rather than a hit.' },
+  { v: 5, short: 'Match intensity', long: 'Brings tournament focus to a social set. Line calls and momentum matter.' },
+];
+
+const SERVING_SCALE = [
+  { v: 1, short: 'Just getting it in', long: "Little pace, no real target. Double faults creep in when the pressure's on." },
+  { v: 2, short: 'Dependable, attackable', long: 'First serve lands, but sits up. The second is a safety ball their opponents step in on.' },
+  { v: 3, short: 'Solid hold', long: 'Reasonable pace and placement, second serve stays out of trouble. Holds serve most of the time.' },
+  { v: 4, short: 'Wins free points', long: 'Enough pace or angle to draw errors and short returns. Holds comfortably on a good day.' },
+  { v: 5, short: 'A weapon', long: 'Genuinely hurts the return. Aces and unreturnables are part of the plan, not an accident.' },
+];
+
 const SKILL_OPTIONS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
 const THIS_YEAR = new Date().getFullYear();
 function generateSalt() {
@@ -1489,6 +1512,7 @@ export default function TennisPairingApp() {
   const [snapshots, setSnapshots] = useState([]);
   const [restoreConfirmId, setRestoreConfirmId] = useState(null);
   const [detailPlayerId, setDetailPlayerId] = useState(null);
+  const [ratingGuideOpen, setRatingGuideOpen] = useState(false);
   const [exportPrompt, setExportPrompt] = useState(false);
   const [isBrave, setIsBrave] = useState(false);
   const [importSkipIds, setImportSkipIds] = useState(new Set());
@@ -3240,21 +3264,22 @@ export default function TennisPairingApp() {
                           </div>
                         </div>
                         <div className="flex-1">
-                          <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Competitive (1-5)</label>
+                          <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Competitive</label>
                           <select value={form.competitive} onChange={(e) => setForm({ ...form, competitive: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
-                            {[1, 2, 3, 4, 5].map((v) => <option key={v} value={v}>{v}</option>)}
+                            {COMPETITIVE_SCALE.map((r) => <option key={r.v} value={r.v}>{r.v} · {r.short}</option>)}
                           </select>
-                          <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>How much they play to win — affects pairing</div>
                         </div>
                         <div className="flex-1">
-                          <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Serving (1-5)</label>
+                          <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Serving</label>
                           <select value={form.serving} onChange={(e) => setForm({ ...form, serving: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
-                            <option value="">—</option>
-                            {[1, 2, 3, 4, 5].map((v) => <option key={v} value={v}>{v}</option>)}
+                            <option value="">Not rated</option>
+                            {SERVING_SCALE.map((r) => <option key={r.v} value={r.v}>{r.v} · {r.short}</option>)}
                           </select>
-                          <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>Serve strength — reference only</div>
                         </div>
                       </div>
+                      <button type="button" onClick={() => setRatingGuideOpen(true)} className="tp-focus text-xs -mt-1" style={{ color: 'var(--court)' }}>
+                        What do these ratings mean?
+                      </button>
                       <input value={form.comments} onChange={(e) => setForm({ ...form, comments: e.target.value })} placeholder="Comments/suggestions (optional)" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                       <div>
                         <label className="text-xs block mb-1" style={{ color: 'var(--muted)' }}>Preferred court</label>
@@ -4064,17 +4089,17 @@ export default function TennisPairingApp() {
                               </button>
                             ))}
                           </div>
-                          <select value={editForm.competitive} onChange={(e) => setEditForm({ ...editForm, competitive: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white">
-                            {[1, 2, 3, 4, 5].map((v) => <option key={v} value={v}>{v} competitive</option>)}
+                          <select value={editForm.competitive} onChange={(e) => setEditForm({ ...editForm, competitive: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white" aria-label="Competitive rating">
+                            {COMPETITIVE_SCALE.map((r) => <option key={r.v} value={r.v}>{r.v} · {r.short}</option>)}
                           </select>
-                          <select value={editForm.serving} onChange={(e) => setEditForm({ ...editForm, serving: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white">
-                            <option value="">— serving</option>
-                            {[1, 2, 3, 4, 5].map((v) => <option key={v} value={v}>{v} serving</option>)}
+                          <select value={editForm.serving} onChange={(e) => setEditForm({ ...editForm, serving: e.target.value })} className="tp-focus tp-input flex-1 px-2 py-2 text-sm bg-white" aria-label="Serving rating">
+                            <option value="">Serve not rated</option>
+                            {SERVING_SCALE.map((r) => <option key={r.v} value={r.v}>{r.v} · {r.short}</option>)}
                           </select>
                         </div>
-                        <div className="text-xs -mt-2" style={{ color: 'var(--muted)' }}>
-                          Competitive: how much they play to win, affects pairing. Serving: serve strength, reference only.
-                        </div>
+                        <button type="button" onClick={() => setRatingGuideOpen(true)} className="tp-focus text-xs -mt-2 text-left" style={{ color: 'var(--court)' }}>
+                          What do these ratings mean?
+                        </button>
                         <input value={editForm.comments} onChange={(e) => setEditForm({ ...editForm, comments: e.target.value })} placeholder="Comments/suggestions" className="tp-focus tp-input w-full px-3 py-2 text-sm" />
                         <select value={editForm.preferredCourt} onChange={(e) => setEditForm({ ...editForm, preferredCourt: e.target.value })} className="tp-focus tp-input w-full px-2 py-2 text-sm bg-white">
                           <option value="">No court preference</option>
@@ -4567,6 +4592,67 @@ export default function TennisPairingApp() {
               <button type="button" onClick={() => setFeedbackOpen(true)} className="tp-focus underline mt-0.5" style={{ color: 'inherit' }}>
                 Feedback or questions?
               </button>
+            </div>
+          )}
+
+          {ratingGuideOpen && (
+            <div
+              className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
+              style={{ background: 'rgba(0,0,0,0.4)' }}
+              onClick={() => setRatingGuideOpen(false)}
+            >
+              <div
+                className="tp-card w-full max-w-sm p-5 space-y-3"
+                style={{ maxHeight: '86vh', overflowY: 'auto' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 font-semibold text-sm">How to rate someone</span>
+                  <button type="button" onClick={() => setRatingGuideOpen(false)} className="tp-focus" style={{ color: 'var(--muted)' }} aria-label="Close">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)', lineHeight: 1.5 }}>
+                  <strong>CTA rating</strong> is effective playing strength <em>in our games</em> — what this
+                  player is actually like to play against on a Thursday evening. It is not an NTRP
+                  conversion. Where a USTA rating doesn&apos;t reflect how someone plays here, the CTA
+                  rating is the one to change; pairing uses it, and USTA only for players who have no
+                  CTA rating.
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold mb-0.5">Competitive</div>
+                  <div className="text-xs mb-1.5" style={{ color: 'var(--muted)' }}>How hard they play to win. Nothing to do with ability.</div>
+                  <div className="space-y-1.5">
+                    {COMPETITIVE_SCALE.map((row) => (
+                      <div key={row.v} className="flex gap-2 text-xs">
+                        <span className="tp-display font-bold shrink-0" style={{ color: 'var(--court)', width: '0.9rem' }}>{row.v}</span>
+                        <span>
+                          <span className="font-semibold">{row.short}</span>
+                          <span style={{ color: 'var(--muted)' }}> — {row.long}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold mb-0.5">Serving</div>
+                  <div className="text-xs mb-1.5" style={{ color: 'var(--muted)' }}>The serve alone, separate from the rest of their game.</div>
+                  <div className="space-y-1.5">
+                    {SERVING_SCALE.map((row) => (
+                      <div key={row.v} className="flex gap-2 text-xs">
+                        <span className="tp-display font-bold shrink-0" style={{ color: 'var(--court)', width: '0.9rem' }}>{row.v}</span>
+                        <span>
+                          <span className="font-semibold">{row.short}</span>
+                          <span style={{ color: 'var(--muted)' }}> — {row.long}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
