@@ -1513,6 +1513,7 @@ export default function TennisPairingApp() {
   const [restoreConfirmId, setRestoreConfirmId] = useState(null);
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const [ratingGuideOpen, setRatingGuideOpen] = useState(false);
+  const [copyingSessionKey, setCopyingSessionKey] = useState(null);
   const [exportPrompt, setExportPrompt] = useState(false);
   const [isBrave, setIsBrave] = useState(false);
   const [importSkipIds, setImportSkipIds] = useState(new Set());
@@ -2067,17 +2068,29 @@ export default function TennisPairingApp() {
   // Takes a copy into this browser's own session. Deliberately a copy, not a handover:
   // if two browsers pointed at one document we would be straight back to the
   // last-write-wins overwriting this whole change exists to remove.
-  function adoptSessionCopy(entry) {
-    const src = (entry && entry.state) || {};
-    // Set formats must come across with the schedule. Without them the copied pairings
-    // would be shown alongside this browser's own format choices, so regenerating would
-    // silently produce a different session than the one that was copied.
-    // `rounds` and `setFormats` are kept consistent: a sheet saved before formats moved
-    // onto sets carries only a count, so the club's usual shape is rebuilt from it.
+  // Reads the sheet FRESH at the moment of copying rather than using the cached listing.
+  //
+  // The listing is only fetched on load and on Refresh, so a sheet adjusted after that
+  // read would be copied in its pre-adjustment state - right players, wrong lineup, and
+  // no sign anything was out of date. That is exactly what happened in real use: a lineup
+  // was adjusted on one device and copied, unadjusted, onto another.
+  async function adoptSessionCopy(entry) {
+    setCopyingSessionKey(entry.key);
+    let src = (entry && entry.state) || {};
+    let stale = false;
+    try {
+      const res = await window.storage.get(entry.key, true);
+      if (res && res.value) src = JSON.parse(res.value);
+    } catch {
+      // Couldn't re-read it - fall back to what the listing had, but say so rather than
+      // silently handing over a copy that may be out of date.
+      stale = true;
+    }
+
     const formats = Array.isArray(src.setFormats) && src.setFormats.length
       ? src.setFormats
       : defaultSetFormats(src.rounds || 3);
-    persistWeekly({
+    await persistWeekly({
       playingIds: src.playingIds || [],
       sessionDate: src.sessionDate && src.sessionDate >= todayISO() ? src.sessionDate : todayISO(),
       sessionTime: src.sessionTime || '',
@@ -2086,8 +2099,13 @@ export default function TennisPairingApp() {
       setFormats: formats,
       schedule: src.schedule || null,
     });
+    setCopyingSessionKey(null);
     setShowOtherSessions(false);
-    setSaveError('');
+    setSaveError(stale
+      ? "Couldn't check that sheet for recent changes — copied the version already loaded. Refresh and copy again if it looks out of date."
+      : '');
+    // Keep the listing honest for whatever is copied next.
+    loadOtherSessions();
   }
 
   async function handleRefresh() {
@@ -2998,7 +3016,13 @@ export default function TennisPairingApp() {
                 <div>
                   <button
                     type="button"
-                    onClick={() => setShowOtherSessions(!showOtherSessions)}
+                    onClick={() => {
+                      const opening = !showOtherSessions;
+                      setShowOtherSessions(opening);
+                      // Re-read on open so the summaries and timestamps reflect what is
+                      // actually stored, not what was loaded when this page opened.
+                      if (opening) loadOtherSessions();
+                    }}
                     className="tp-focus text-xs font-medium"
                     style={{ color: 'var(--court)' }}
                   >
@@ -3008,9 +3032,9 @@ export default function TennisPairingApp() {
                     <div className="tp-card p-3 mt-2 space-y-2">
                       <div className="text-xs" style={{ color: 'var(--muted)' }}>
                         Each browser keeps its own sheet, so these belong to other people or to your
-                        own other devices. Taking a copy brings one into this browser to work on —
-                        it never changes theirs. Empty sheets aren't listed, since there'd be
-                        nothing to copy.
+                        own other devices. Taking a copy pulls the latest version of one into this
+                        browser to work on, including any hand adjustments — it never changes theirs.
+                        Empty sheets aren't listed, since there'd be nothing to copy.
                       </div>
                       {otherSessions.map((entry) => (
                         <div key={entry.key} className="flex items-center gap-2">
@@ -3021,10 +3045,11 @@ export default function TennisPairingApp() {
                           <button
                             type="button"
                             onClick={() => adoptSessionCopy(entry)}
+                            disabled={copyingSessionKey !== null}
                             className="tp-input tp-focus px-2 py-1.5 text-xs shrink-0"
-                            style={{ color: 'var(--court)' }}
+                            style={{ color: 'var(--court)', opacity: copyingSessionKey !== null ? 0.5 : 1 }}
                           >
-                            Take a copy
+                            {copyingSessionKey === entry.key ? 'Copying…' : 'Take a copy'}
                           </button>
                         </div>
                       ))}
