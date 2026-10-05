@@ -67,18 +67,6 @@ function computeWinStreak(playerId, history) {
   return streak;
 }
 
-// A match counts as an upset when the winning team's average skill was clearly lower
-// than the losing team's - "clearly" meaning at least one full USTA rating tier (0.5).
-function isUpset(match, playerMap, threshold = 0.5) {
-  if (!match.winner) return false;
-  const winners = match.winner === 'A' ? match.teamA : match.teamB;
-  const losers = match.winner === 'A' ? match.teamB : match.teamA;
-  if (!winners.every((id) => playerMap[id]) || !losers.every((id) => playerMap[id])) return false;
-  const winnerAvg = avgSkill(winners, playerMap);
-  const loserAvg = avgSkill(losers, playerMap);
-  return loserAvg - winnerAvg >= threshold;
-}
-
 function competitiveSpread(ids, playerMap) {
   const vals = ids.map((id) => playerMap[id].competitive);
   return Math.max(...vals) - Math.min(...vals);
@@ -4390,7 +4378,6 @@ export default function TennisPairingApp() {
                       const winner = getLoggedWinner(ri + 1, court, m.teamA, m.teamB);
                       const recordId = `${sessionDate}-set${ri + 1}-court${court}-${matchIdentity(m.teamA, m.teamB)}`;
                       const isCelebrating = celebratingMatchId === recordId;
-                      const upset = winner ? isUpset({ teamA: m.teamA, teamB: m.teamB, winner }, schedule.playerMap) : false;
                       const notesA = m.teamA.map((id) => schedule.playerMap[id]).filter((pl) => pl.comments);
                       const notesB = m.teamB.map((id) => schedule.playerMap[id]).filter((pl) => pl.comments);
                       const editing = editingRoundIndex === ri;
@@ -4455,11 +4442,7 @@ export default function TennisPairingApp() {
                               <span className="tp-confetti-pop">🎉</span>
                             </div>
                           )}
-                          {upset && (
-                            <div className="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'var(--clay)', color: '#fff' }}>
-                              Upset!
-                            </div>
-                          )}                          {editing ? (
+                          {editing ? (
                             <div className="flex items-center gap-2 mb-2">
                               <span className="text-xs font-semibold tracking-wide" style={{ color: 'var(--muted)' }}>COURT</span>
                               <select
@@ -4557,21 +4540,14 @@ export default function TennisPairingApp() {
                 </div>
               ))}
               {schedule && (() => {
-                // A key for the badges, sitting with the sheet itself. The sheet gets
-                // screenshotted into the club chat, where there is nothing to tap and no
-                // way to ask - so the explanation has to travel with the picture.
+                // A key for the badge, sitting with the sheet itself. The sheet gets screenshotted
+                // into the club chat, where there is nothing to tap and no way to ask - so the
+                // explanation has to travel with the picture.
                 const anyStreak = Object.values(winStreaks).some((v) => v >= 3);
-                const anyUpset = schedule.rounds.some((r) => r.matches.some((m) => {
-                  const court = String(m.courtNumber || 1);
-                  const w = getLoggedWinner(schedule.rounds.indexOf(r) + 1, court, m.teamA, m.teamB);
-                  return w ? isUpset({ teamA: m.teamA, teamB: m.teamB, winner: w }, schedule.playerMap) : false;
-                }));
-                if (!anyStreak && !anyUpset) return null;
+                if (!anyStreak) return null;
                 return (
                   <div className="text-xs px-3 py-2 rounded-lg" style={{ background: '#F1F1EE', color: 'var(--muted)' }}>
-                    {anyStreak && <span>🔥 = wins in a row</span>}
-                    {anyStreak && anyUpset && <span> &nbsp;·&nbsp; </span>}
-                    {anyUpset && <span>Upset = beat a higher-rated pair</span>}
+                    🔥 = wins in a row
                   </div>
                 );
               })()}
@@ -4666,20 +4642,11 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
-              <div>
-                <div className="text-sm font-semibold mb-2">Win / loss record</div>
-                {recordList.length === 0 ? (
-                  <div className="text-sm text-center py-6" style={{ color: 'var(--muted)' }}>No results logged yet. Log winners from the Results tab and they'll show up here.</div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {recordList.map((r) => (
-                      <div key={r.name} className="tp-card flex items-center justify-between px-4 py-2.5 text-sm">
-                        <span className="font-medium">{r.name}{winStreaks[r.id] >= 3 ? ` 🔥${winStreaks[r.id]}` : ''}</span>
-                        <span style={{ color: 'var(--muted)' }}>{r.wins}-{r.losses}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                Every match played, newest first. Individual records live on each player's card —
+                tap the ⓘ beside a name on Today, or a name on the pairings sheet. They aren't listed
+                side by side here on purpose: a standings table ranks the whole room, and this is
+                meant to be a record of what happened rather than a league ladder.
               </div>
 
               <div>
