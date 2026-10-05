@@ -798,6 +798,19 @@ const LEGACY_WEEKLY_KEY = WEEKLY_KEY_BASE;
 // the bare legacy key would match the prefix and be listed as somebody's session.
 const SESSION_KEY_PREFIX = `${WEEKLY_KEY_BASE}:`;
 const DEVICE_ID_STORAGE_KEY = 'court-call-device-id';
+// One flag for all the next-step hints. Dismissing any of them retires the lot - the
+// same idea shouldn't have to be waved away three times. Per browser, like the device id,
+// so a regular clears it once while a first-timer still gets the help.
+const HINTS_DISMISSED_KEY = 'court-call-hints-dismissed';
+
+function readHintsDismissed() {
+  try {
+    if (typeof localStorage === 'undefined' || !localStorage) return false;
+    return localStorage.getItem(HINTS_DISMISSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 // localStorage is not universally available - Safari in private mode throws on write,
 // and the claude.ai artifact preview has no localStorage at all. When it can't be used
@@ -1309,6 +1322,40 @@ function PlayerToggleRow({ p, playing, onToggle, onInfo }) {
   );
 }
 
+// A one-line nudge toward the next step, shown only when that step is actually available.
+// Deliberately not a tour or a help page: the question "what now?" happens in the app, on
+// a phone, at the moment of doing - so the answer belongs there rather than in a document
+// somebody would have to go and find.
+function NextStepHint({ text, actionLabel, onAction, onDismiss }) {
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-2.5 rounded-lg"
+      style={{ background: 'var(--court-tint)' }}
+    >
+      <span className="flex-1 text-xs" style={{ color: 'var(--court)', lineHeight: 1.45 }}>{text}</span>
+      {actionLabel && (
+        <button
+          type="button"
+          onClick={onAction}
+          className="tp-focus shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md whitespace-nowrap"
+          style={{ background: 'var(--court)', color: '#fff' }}
+        >
+          {actionLabel}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="tp-focus shrink-0"
+        style={{ color: 'var(--court)', opacity: 0.6 }}
+        aria-label="Hide these tips"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
 function normalizeName(s) {
   return String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -1514,6 +1561,7 @@ export default function TennisPairingApp() {
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const [ratingGuideOpen, setRatingGuideOpen] = useState(false);
   const [copyingSessionKey, setCopyingSessionKey] = useState(null);
+  const [hintsDismissed, setHintsDismissed] = useState(() => readHintsDismissed());
   const [exportPrompt, setExportPrompt] = useState(false);
   const [isBrave, setIsBrave] = useState(false);
   const [importSkipIds, setImportSkipIds] = useState(new Set());
@@ -1593,6 +1641,15 @@ export default function TennisPairingApp() {
       events.forEach((ev) => window.removeEventListener(ev, markActive));
     };
   }, [anyTierOpen, superuserUnlocked, lockAllTiers]);
+
+  function dismissHints() {
+    setHintsDismissed(true);
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) localStorage.setItem(HINTS_DISMISSED_KEY, '1');
+    } catch {
+      // Not persisting is fine - it just means they come back next visit.
+    }
+  }
 
   function stayUnlocked() {
     lastActivityRef.current = Date.now();
@@ -3340,6 +3397,15 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
+              {!hintsDismissed && canGenerate && (
+                <NextStepHint
+                  text={`${playingCount} marked in. Next, choose your sets.`}
+                  actionLabel="Courts →"
+                  onAction={() => { setTab('courts'); recordTab('courts'); }}
+                  onDismiss={dismissHints}
+                />
+              )}
+
               {directory.length > 0 && (
                 <>
                   <div>
@@ -4264,6 +4330,13 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
+              {!hintsDismissed && canGenerate && !schedule && (
+                <NextStepHint
+                  text="Ready. Generate the pairings below."
+                  onDismiss={dismissHints}
+                />
+              )}
+
               <button type="button" onClick={handleGenerate} disabled={!canGenerate} className="tp-btn-primary tp-focus w-full py-3 flex items-center justify-center gap-2">
                 <Shuffle size={17} />
                 Generate Pairings
@@ -4276,6 +4349,13 @@ export default function TennisPairingApp() {
               {!schedule && (
                 <div className="text-sm text-center py-10" style={{ color: 'var(--muted)' }}>No pairings yet. Set up your courts and sets, then generate.</div>
               )}
+              {!hintsDismissed && schedule && (
+                <NextStepHint
+                  text="Tap the winning pair as each set finishes — that's what builds the records."
+                  onDismiss={dismissHints}
+                />
+              )}
+
               {schedule && schedule.rounds.map((round, ri) => (
                 <div key={ri}>
                   <div className="flex items-center justify-between mb-2">
