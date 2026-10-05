@@ -4332,7 +4332,7 @@ export default function TennisPairingApp() {
                                 color: selectedPlayerId === id ? '#fff' : 'var(--court)',
                               }}
                             >
-                              {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ' 🔥' : ''}
+                              {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
                             </button>
                           ))}
                         </div>
@@ -4347,7 +4347,7 @@ export default function TennisPairingApp() {
                                 className="tp-focus font-semibold text-sm"
                                 style={{ background: 'transparent', textDecorationLine: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: '2px', textDecorationColor: 'var(--line)' }}
                               >
-                                {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ' 🔥' : ''}
+                                {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
                               </button>
                             </React.Fragment>
                           ))}
@@ -4476,6 +4476,26 @@ export default function TennisPairingApp() {
                   )}
                 </div>
               ))}
+              {schedule && (() => {
+                // A key for the badges, sitting with the sheet itself. The sheet gets
+                // screenshotted into the club chat, where there is nothing to tap and no
+                // way to ask - so the explanation has to travel with the picture.
+                const anyStreak = Object.values(winStreaks).some((v) => v >= 3);
+                const anyUpset = schedule.rounds.some((r) => r.matches.some((m) => {
+                  const court = String(m.courtNumber || 1);
+                  const w = getLoggedWinner(schedule.rounds.indexOf(r) + 1, court, m.teamA, m.teamB);
+                  return w ? isUpset({ teamA: m.teamA, teamB: m.teamB, winner: w }, schedule.playerMap) : false;
+                }));
+                if (!anyStreak && !anyUpset) return null;
+                return (
+                  <div className="text-xs px-3 py-2 rounded-lg" style={{ background: '#F1F1EE', color: 'var(--muted)' }}>
+                    {anyStreak && <span>🔥 = wins in a row</span>}
+                    {anyStreak && anyUpset && <span> &nbsp;·&nbsp; </span>}
+                    {anyUpset && <span>Upset = beat a higher-rated pair</span>}
+                  </div>
+                );
+              })()}
+
               {schedule && (
                 <div className="space-y-2">
                   <button type="button" onClick={handleGenerate} className="tp-focus w-full py-2.5 flex items-center justify-center gap-2 text-sm rounded-lg border" style={{ borderColor: 'var(--line)', color: 'var(--court)' }}>
@@ -4574,7 +4594,7 @@ export default function TennisPairingApp() {
                   <div className="space-y-1.5">
                     {recordList.map((r) => (
                       <div key={r.name} className="tp-card flex items-center justify-between px-4 py-2.5 text-sm">
-                        <span className="font-medium">{r.name}{winStreaks[r.id] >= 3 ? ' 🔥' : ''}</span>
+                        <span className="font-medium">{r.name}{winStreaks[r.id] >= 3 ? ` 🔥${winStreaks[r.id]}` : ''}</span>
                         <span style={{ color: 'var(--muted)' }}>{r.wins}-{r.losses}</span>
                       </div>
                     ))}
