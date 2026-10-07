@@ -67,6 +67,82 @@ function computeWinStreak(playerId, history) {
   return streak;
 }
 
+/* ---- directory insights -----------------------------------------------------
+   Answers one question a plain win/loss column cannot: does a player's rating match
+   their results? Overall record mostly reflects who they were paired WITH, since the
+   engine deliberately puts a strong player with a weak one. Results against
+   HIGHER-rated opposition are much harder to explain away, which makes that the
+   signal worth surfacing.
+
+   Evidence only. Nothing here changes a rating - the organizer decides.             */
+const INSIGHT_MIN_MATCHES = 5;      // below this, a record says nothing
+const INSIGHT_RATING_GAP = 0.25;    // how much stronger the other side must be to count
+
+function buildInsights(directory, history) {
+  const byId = {};
+  directory.forEach((p) => {
+    byId[p.id] = {
+      id: p.id, name: p.name, rating: effSkill(p),
+      wins: 0, losses: 0, winsVsHigher: 0, lossesVsHigher: 0,
+    };
+  });
+
+  history.forEach((h) => {
+    if (!h.winner) return;
+    const winners = h.winner === 'A' ? h.teamA : h.teamB;
+    const losers = h.winner === 'A' ? h.teamB : h.teamA;
+    const known = (ids) => ids.every((id) => byId[id]);
+    if (!known(winners) || !known(losers)) return; // a player since removed
+
+    const avg = (ids) => ids.reduce((t, id) => t + byId[id].rating, 0) / ids.length;
+    const wAvg = avg(winners);
+    const lAvg = avg(losers);
+
+    winners.forEach((id) => {
+      byId[id].wins += 1;
+      // Opposition clearly stronger than this player's own side.
+      if (lAvg - wAvg >= INSIGHT_RATING_GAP) byId[id].winsVsHigher += 1;
+    });
+    losers.forEach((id) => {
+      byId[id].losses += 1;
+      if (wAvg - lAvg >= INSIGHT_RATING_GAP) byId[id].lossesVsHigher += 1;
+    });
+  });
+
+  const rows = Object.values(byId)
+    .map((r) => {
+      const played = r.wins + r.losses;
+      const vsHigher = r.winsVsHigher + r.lossesVsHigher;
+      return {
+        ...r,
+        played,
+        winRate: played > 0 ? r.wins / played : null,
+        vsHigher,
+        thin: played < INSIGHT_MIN_MATCHES,
+      };
+    })
+    .filter((r) => r.played > 0);
+
+  // Where a rating looks out of step: enough matches, and a win rate a long way from
+  // the even split the engine is aiming for. Flagged for a human to look at, nothing more.
+  const rated = rows.filter((r) => !r.thin && r.winRate !== null);
+  rated.forEach((r) => {
+    const delta = r.winRate - 0.5;
+    r.flag = Math.abs(delta) >= 0.25 ? (delta > 0 ? 'low' : 'high') : null;
+  });
+
+  rows.sort((a, b) => {
+    if (a.thin !== b.thin) return a.thin ? 1 : -1;
+    return (b.winRate || 0) - (a.winRate || 0);
+  });
+
+  return {
+    rows,
+    totalLogged: history.filter((h) => h.winner).length,
+    flagged: rows.filter((r) => r.flag),
+  };
+}
+
 function competitiveSpread(ids, playerMap) {
   const vals = ids.map((id) => playerMap[id].competitive);
   return Math.max(...vals) - Math.min(...vals);
@@ -1548,6 +1624,7 @@ export default function TennisPairingApp() {
   const [restoreConfirmId, setRestoreConfirmId] = useState(null);
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const [ratingGuideOpen, setRatingGuideOpen] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
   const [copyingSessionKey, setCopyingSessionKey] = useState(null);
   const [hintsDismissed, setHintsDismissed] = useState(() => readHintsDismissed());
   const [exportPrompt, setExportPrompt] = useState(false);
@@ -2824,6 +2901,7 @@ export default function TennisPairingApp() {
     .filter((r) => r.wins + r.losses > 0)
     .sort((a, b) => a.name.localeCompare(b.name));
   const loggedMatches = [...history].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const insights = buildInsights(directory, history);
   const winStreaks = {};
   directory.forEach((p) => { winStreaks[p.id] = computeWinStreak(p.id, history); });
 
@@ -4094,6 +4172,125 @@ export default function TennisPairingApp() {
                   </div>
                 );
               })()}
+
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setInsightsOpen(!insightsOpen)}
+                  className="tp-focus text-xs font-medium"
+                  style={{ color: 'var(--court)' }}
+                >
+                  {insightsOpen ? 'Hide' : 'Show'} insights
+                  {insights.flagged.length > 0 && !insightsOpen
+                    ? ` — ${insights.flagged.length} rating${insights.flagged.length === 1 ? '' : 's'} worth a look`
+                    : ''}
+                </button>
+
+                {insightsOpen && (
+                  <div className="tp-card p-3 mt-2 space-y-3">
+                    <div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-sm font-semibold flex-1">Insights</span>
+                        <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                          {insights.totalLogged} match{insights.totalLogged === 1 ? '' : 'es'} logged
+                        </span>
+                      </div>
+                      <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                        Does the rating match the result? Players above the line are winning more
+                        than their rating predicts.
+                      </div>
+                    </div>
+
+                    {insights.rows.filter((r) => !r.thin).length === 0 ? (
+                      <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                        Not enough logged results yet. Each player needs at least {INSIGHT_MIN_MATCHES} matches
+                        before anything here means much — keep logging winners and this fills in.
+                      </div>
+                    ) : (
+                      <>
+                        {(() => {
+                          const plotted = insights.rows.filter((r) => !r.thin);
+                          const ratings = plotted.map((r) => r.rating);
+                          const minR = Math.min(...ratings) - 0.25;
+                          const maxR = Math.max(...ratings) + 0.25;
+                          const span = Math.max(0.5, maxR - minR);
+                          const W = 320; const H = 150;
+                          const L = 30; const B = 18;
+                          const x = (r) => L + ((r - minR) / span) * (W - L - 6);
+                          const y = (w) => 8 + (1 - w) * (H - B - 8);
+                          return (
+                            <svg viewBox={`0 0 ${W} ${H + 12}`} style={{ width: '100%', height: 'auto' }} aria-label="Rating against win rate">
+                              <line x1={L} y1={H - B} x2={W - 4} y2={H - B} stroke="var(--line)" strokeWidth="1" />
+                              <line x1={L} y1="6" x2={L} y2={H - B} stroke="var(--line)" strokeWidth="1" />
+                              {/* An even split is what the engine aims for, so it is the reference line. */}
+                              <line x1={L} y1={y(0.5)} x2={W - 4} y2={y(0.5)} stroke="var(--court)" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                              <text x={L - 4} y={y(1) + 3} fontSize="7" fill="var(--muted)" textAnchor="end">100%</text>
+                              <text x={L - 4} y={y(0.5) + 3} fontSize="7" fill="var(--muted)" textAnchor="end">50%</text>
+                              <text x={L - 4} y={y(0) + 3} fontSize="7" fill="var(--muted)" textAnchor="end">0%</text>
+                              <text x={L} y={H + 4} fontSize="7" fill="var(--muted)">{minR.toFixed(1)}</text>
+                              <text x={W - 4} y={H + 4} fontSize="7" fill="var(--muted)" textAnchor="end">{maxR.toFixed(1)}</text>
+                              <text x={(L + W) / 2} y={H + 10} fontSize="7" fill="var(--muted)" textAnchor="middle">rating</text>
+                              {plotted.map((r) => (
+                                <g key={r.id}>
+                                  <circle cx={x(r.rating)} cy={y(r.winRate)} r="4"
+                                    fill={r.flag ? 'var(--clay)' : 'var(--court)'} />
+                                  <text x={x(r.rating) + 6} y={y(r.winRate) + 3} fontSize="7.5"
+                                    fill={r.flag ? 'var(--ink)' : 'var(--muted)'}>
+                                    {r.name.split(' ')[0]}
+                                  </text>
+                                </g>
+                              ))}
+                            </svg>
+                          );
+                        })()}
+
+                        {insights.flagged.length > 0 && (
+                          <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--clay-tint)', color: 'var(--ink)', lineHeight: 1.5 }}>
+                            {insights.flagged.map((r) => (
+                              <span key={r.id}>
+                                <strong>{r.name}</strong> is winning {r.flag === 'low' ? 'well above' : 'below'} a
+                                {' '}{r.rating.toFixed(1)}.{' '}
+                              </span>
+                            ))}
+                            Worth a look — evidence, not a verdict.
+                          </div>
+                        )}
+
+                        <table className="w-full" style={{ borderCollapse: 'collapse', fontSize: '8.5pt' }}>
+                          <thead>
+                            <tr>
+                              {['Player', 'Played', 'W–L', 'vs higher'].map((h, i) => (
+                                <th key={h} className="text-xs font-semibold pb-1"
+                                  style={{ color: 'var(--muted)', textAlign: i === 0 ? 'left' : 'right' }}>
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {insights.rows.map((r) => (
+                              <tr key={r.id} style={{ opacity: r.thin ? 0.45 : 1 }}>
+                                <td className="text-xs py-1" style={{ borderTop: '0.5px solid var(--line)' }}>{r.name}</td>
+                                <td className="text-xs py-1 text-right" style={{ borderTop: '0.5px solid var(--line)' }}>{r.played}</td>
+                                <td className="text-xs py-1 text-right" style={{ borderTop: '0.5px solid var(--line)' }}>{r.wins}&ndash;{r.losses}</td>
+                                <td className="text-xs py-1 text-right font-semibold"
+                                  style={{ borderTop: '0.5px solid var(--line)', color: r.flag ? 'var(--clay)' : 'var(--ink)' }}>
+                                  {r.vsHigher > 0 ? `${r.winsVsHigher}–${r.lossesVsHigher}` : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </>
+                    )}
+
+                    <div className="text-xs" style={{ color: 'var(--muted)', lineHeight: 1.5 }}>
+                      Faded rows have fewer than {INSIGHT_MIN_MATCHES} matches — too few to read anything into.
+                      Only logged results count, so an unlogged loss makes a record look better than it was.
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <input
                 value={search}
