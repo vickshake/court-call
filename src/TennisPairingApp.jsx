@@ -1371,7 +1371,7 @@ function PlayerToggleRow({ p, playing, onToggle, onInfo }) {
           {playing && <Check size={14} color="#fff" />}
         </span>
         <span className={`text-xs font-bold px-2 py-1 rounded-md tp-chip-${p.sex}`}>{p.sex}</span>
-        <span className="flex-1 font-medium text-sm truncate">{p.name}</span>
+        <span className="flex-1 font-medium tp-oncourt truncate">{p.name}</span>
       </button>
       <button
         type="button"
@@ -2910,13 +2910,36 @@ export default function TennisPairingApp() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
         .tp-root {
-          --bg: #F6F7F4; --surface: #FFFFFF; --ink: #1C211D; --muted: #6B7268;
-          --court: #1E5631; --court-tint: #E7F0E9; --clay: #A8532E; --clay-tint: #F3E4DC;
-          --warn: #9C6B0B; --warn-tint: #F5EBD6; --neutral-fill: #C17F5D;
+          --bg: #F6F7F4; --surface: #FFFFFF; --ink: #1C211D; --muted: #5A6157;
+          --court: #1E5631; --court-tint: #E7F0E9; --clay: #9C4A28; --clay-tint: #F3E4DC;
+          --warn: #8A5E09; --warn-tint: #F5EBD6; --neutral-fill: #C17F5D;
           --line: #E2E5DF;
           font-family: 'IBM Plex Sans', sans-serif; background: var(--bg); color: var(--ink);
         }
         .tp-display { font-family: 'Big Shoulders Display', sans-serif; letter-spacing: 0.01em; }
+
+        /* ---- type scale ----------------------------------------------------
+           Sizes are set once here rather than by editing every class in the app,
+           so the hierarchy between headings, content and fine print is preserved
+           instead of everything growing equally.
+
+           Phones get the real increase: this is read at arm's length, outdoors,
+           often by someone who would rather not reach for glasses mid-session.
+           Desktop, where the layout already reads well, gets a smaller lift.    */
+        .tp-root .text-xs { font-size: 0.8125rem; line-height: 1.45; }   /* 13px - captions, caveats */
+        .tp-root .text-sm { font-size: 0.9688rem; line-height: 1.45; }   /* 15.5px - names, most content */
+        .tp-root .text-base { font-size: 1.0625rem; line-height: 1.45; }
+
+        /* Read on court, standing up, at a glance. The one place where size wins
+           over density. */
+        .tp-root .tp-oncourt { font-size: 1.0625rem; line-height: 1.3; }
+
+        @media (min-width: 640px) {
+          .tp-root .text-xs { font-size: 0.775rem; }
+          .tp-root .text-sm { font-size: 0.9063rem; }
+          .tp-root .text-base { font-size: 1rem; }
+          .tp-root .tp-oncourt { font-size: 1rem; }
+        }
         .tp-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
         .tp-tab { font-weight: 600; border-radius: 999px; transition: all .15s ease; white-space: nowrap; }
         .tp-btn-primary {
@@ -4208,41 +4231,46 @@ export default function TennisPairingApp() {
                       </div>
                     ) : (
                       <>
-                        {(() => {
-                          const plotted = insights.rows.filter((r) => !r.thin);
-                          const ratings = plotted.map((r) => r.rating);
-                          const minR = Math.min(...ratings) - 0.25;
-                          const maxR = Math.max(...ratings) + 0.25;
-                          const span = Math.max(0.5, maxR - minR);
-                          const W = 320; const H = 150;
-                          const L = 30; const B = 18;
-                          const x = (r) => L + ((r - minR) / span) * (W - L - 6);
-                          const y = (w) => 8 + (1 - w) * (H - B - 8);
-                          return (
-                            <svg viewBox={`0 0 ${W} ${H + 12}`} style={{ width: '100%', height: 'auto' }} aria-label="Rating against win rate">
-                              <line x1={L} y1={H - B} x2={W - 4} y2={H - B} stroke="var(--line)" strokeWidth="1" />
-                              <line x1={L} y1="6" x2={L} y2={H - B} stroke="var(--line)" strokeWidth="1" />
-                              {/* An even split is what the engine aims for, so it is the reference line. */}
-                              <line x1={L} y1={y(0.5)} x2={W - 4} y2={y(0.5)} stroke="var(--court)" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
-                              <text x={L - 4} y={y(1) + 3} fontSize="7" fill="var(--muted)" textAnchor="end">100%</text>
-                              <text x={L - 4} y={y(0.5) + 3} fontSize="7" fill="var(--muted)" textAnchor="end">50%</text>
-                              <text x={L - 4} y={y(0) + 3} fontSize="7" fill="var(--muted)" textAnchor="end">0%</text>
-                              <text x={L} y={H + 4} fontSize="7" fill="var(--muted)">{minR.toFixed(1)}</text>
-                              <text x={W - 4} y={H + 4} fontSize="7" fill="var(--muted)" textAnchor="end">{maxR.toFixed(1)}</text>
-                              <text x={(L + W) / 2} y={H + 10} fontSize="7" fill="var(--muted)" textAnchor="middle">rating</text>
-                              {plotted.map((r) => (
-                                <g key={r.id}>
-                                  <circle cx={x(r.rating)} cy={y(r.winRate)} r="4"
-                                    fill={r.flag ? 'var(--clay)' : 'var(--court)'} />
-                                  <text x={x(r.rating) + 6} y={y(r.winRate) + 3} fontSize="7.5"
-                                    fill={r.flag ? 'var(--ink)' : 'var(--muted)'}>
-                                    {r.name.split(' ')[0]}
-                                  </text>
-                                </g>
-                              ))}
-                            </svg>
-                          );
-                        })()}
+                        {/* A sorted bar list rather than a scatter. Same question - who is
+                            winning more than their rating predicts - but legible on a phone and
+                            readable without interpreting dot positions. Furthest from an even
+                            split sits at the top, so the answer is the first thing seen. */}
+                        <div className="space-y-2">
+                          {insights.rows.filter((r) => !r.thin).map((r) => {
+                            const pct = Math.round(r.winRate * 100);
+                            return (
+                              <button
+                                key={r.id}
+                                type="button"
+                                onClick={() => setDetailPlayerId(r.id)}
+                                className="tp-focus w-full text-left"
+                                style={{ background: 'transparent' }}
+                                aria-label={`Details for ${r.name}`}
+                              >
+                                <div className="flex items-baseline gap-2">
+                                  <span className="text-sm font-semibold flex-1 truncate">{r.name}</span>
+                                  <span className="text-xs" style={{ color: 'var(--muted)' }}>{r.rating.toFixed(1)}</span>
+                                  <span className="text-sm font-bold" style={{ color: r.flag ? 'var(--clay)' : 'var(--court)', minWidth: '2.6rem', textAlign: 'right' }}>
+                                    {pct}%
+                                  </span>
+                                </div>
+                                <div className="relative mt-1" style={{ height: 10, borderRadius: 5, background: 'var(--line)' }}>
+                                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 5, background: r.flag ? 'var(--clay)' : 'var(--court)' }} />
+                                  {/* An even split is what the engine aims for, so it is the mark to read against. */}
+                                  <div style={{ position: 'absolute', left: '50%', top: -2, bottom: -2, width: 2, background: 'var(--ink)', opacity: 0.35 }} />
+                                </div>
+                                <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                  {r.wins}&ndash;{r.losses} overall
+                                  {r.vsHigher > 0 ? ` · ${r.winsVsHigher}–${r.lossesVsHigher} against stronger pairs` : ''}
+                                </div>
+                              </button>
+                            );
+                          })}
+                          <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                            The upright mark is an even split — what the pairing aims for. Tap a name
+                            for their full card.
+                          </div>
+                        </div>
 
                         {insights.flagged.length > 0 && (
                           <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--clay-tint)', color: 'var(--ink)', lineHeight: 1.5 }}>
@@ -4604,11 +4632,11 @@ export default function TennisPairingApp() {
                         <div className={`flex flex-wrap gap-x-1 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
                           {team.map((id, ti) => (
                             <React.Fragment key={id}>
-                              {ti > 0 && <span className="font-semibold text-sm" style={{ color: 'var(--muted)' }}>&amp;</span>}
+                              {ti > 0 && <span className="font-semibold tp-oncourt" style={{ color: 'var(--muted)' }}>&amp;</span>}
                               <button
                                 type="button"
                                 onClick={() => setDetailPlayerId(id)}
-                                className="tp-focus font-semibold text-sm"
+                                className="tp-focus font-semibold tp-oncourt"
                                 style={{ background: 'transparent', textDecorationLine: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: '2px', textDecorationColor: 'var(--line)' }}
                               >
                                 {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
