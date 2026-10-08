@@ -892,6 +892,20 @@ const DEVICE_ID_STORAGE_KEY = 'court-call-device-id';
 // so a regular clears it once while a first-timer still gets the help.
 const HINTS_DISMISSED_KEY = 'court-call-hints-dismissed';
 
+// Which other browser's sheet this one is watching, if any. Per browser, like the device
+// id - watching somebody else's sheet is a view preference, not something to push into
+// the shared record.
+const VIEWING_KEY = 'court-call-viewing';
+
+function readViewingKey() {
+  try {
+    if (typeof localStorage === 'undefined' || !localStorage) return null;
+    return localStorage.getItem(VIEWING_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
 function readHintsDismissed() {
   try {
     if (typeof localStorage === 'undefined' || !localStorage) return false;
@@ -1651,6 +1665,14 @@ export default function TennisPairingApp() {
   const [ratingGuideOpen, setRatingGuideOpen] = useState(false);
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [copyingSessionKey, setCopyingSessionKey] = useState(null);
+  const [viewingKey, setViewingKey] = useState(() => readViewingKey());
+  const [viewingSheet, setViewingSheet] = useState(null);   // { key, state, updatedAt }
+  const [viewingBusy, setViewingBusy] = useState(false);
+  const [viewingError, setViewingError] = useState('');
+  // Which sheet a logged result belongs to. A ref because logResult fires from a handler
+  // and getLoggedWinner is read during render, and both are declared above the point
+  // where the sheet on screen is worked out.
+  const loggingContextRef = useRef({ date: '', playerMap: {} });
   const [hintsDismissed, setHintsDismissed] = useState(() => readHintsDismissed());
   const [exportPrompt, setExportPrompt] = useState(false);
   const [isBrave, setIsBrave] = useState(false);
@@ -2221,6 +2243,66 @@ export default function TennisPairingApp() {
   // read would be copied in its pre-adjustment state - right players, wrong lineup, and
   // no sign anything was out of date. That is exactly what happened in real use: a lineup
   // was adjusted on one device and copied, unadjusted, onto another.
+  // Reads another browser's sheet fresh every time, rather than copying it.
+  //
+  // A copy is a snapshot: it diverges the moment the other person adjusts anything, it
+  // replaces this browser's own sheet, and it carries their state into yours where a
+  // mismatch reads as your problem. Watching is what is actually wanted most of the time
+  // - see the organizer's sheet as it stands now, hand adjustments included - and it
+  // leaves both sheets alone.
+  const loadViewingSheet = useCallback(async (key) => {
+    if (!key) return;
+    setViewingBusy(true);
+    try {
+      const res = await window.storage.get(key, true);
+      const state = res && res.value ? JSON.parse(res.value) : null;
+      if (!state || !state.schedule) {
+        // Sheets age out, and a sheet with nothing on it is nothing to watch.
+        setViewingSheet(null);
+        setViewingError('That sheet has no pairings on it right now.');
+      } else {
+        setViewingSheet({ key, state, updatedAt: state.updatedAt || null });
+        setViewingError('');
+      }
+    } catch {
+      setViewingSheet(null);
+      setViewingError("Couldn't reach that sheet just now — showing your own instead.");
+    }
+    setViewingBusy(false);
+  }, []);
+
+  // Pick the watched sheet back up on return, so coming back to see how the organizer's
+  // lineup ended up doesn't mean finding it again each time. Declared after the loader it
+  // calls - a hook that runs before its callback exists crashes the whole app on mount.
+  useEffect(() => {
+    if (loaded && viewingKey && !viewingSheet) loadViewingSheet(viewingKey);
+  }, [loaded, viewingKey, viewingSheet, loadViewingSheet]);
+
+  function openSessionView(entry) {
+    recordAction('view_other_sheet');
+    setViewingKey(entry.key);
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) localStorage.setItem(VIEWING_KEY, entry.key);
+    } catch {
+      // Not persisting just means it won't still be watching next visit.
+    }
+    setShowOtherSessions(false);
+    loadViewingSheet(entry.key);
+    setTab('results');
+    recordTab('results');
+  }
+
+  function closeSessionView() {
+    setViewingKey(null);
+    setViewingSheet(null);
+    setViewingError('');
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) localStorage.removeItem(VIEWING_KEY);
+    } catch {
+      // ignored
+    }
+  }
+
   async function adoptSessionCopy(entry) {
     setCopyingSessionKey(entry.key);
     let src = (entry && entry.state) || {};
@@ -2248,6 +2330,7 @@ export default function TennisPairingApp() {
     });
     setCopyingSessionKey(null);
     setShowOtherSessions(false);
+    closeSessionView(); // a copy is now this browser's own sheet, so stop watching theirs
     setSaveError(stale
       ? "Couldn't check that sheet for recent changes — copied the version already loaded. Refresh and copy again if it looks out of date."
       : '');
@@ -2257,6 +2340,7 @@ export default function TennisPairingApp() {
 
   async function handleRefresh() {
     setSyncing(true);
+    if (viewingKey) await loadViewingSheet(viewingKey);
     await loadAll();
     await loadOtherSessions();
     setTodaySearch('');
@@ -2623,9 +2707,9 @@ export default function TennisPairingApp() {
   }
 
   function logResult(setNumber, court, format, teamA, teamB, winner) {
-    const dateStr = sessionDate;
+    const { date: dateStr, playerMap: map } = loggingContextRef.current;
     const recordId = `${dateStr}-set${setNumber}-court${court}-${matchIdentity(teamA, teamB)}`;
-    const nameOf = (id) => (schedule.playerMap[id] ? schedule.playerMap[id].name : '?');
+    const nameOf = (id) => ((map && map[id]) ? map[id].name : '?');
     const entry = {
       id: recordId,
       date: dateStr,
@@ -2648,7 +2732,7 @@ export default function TennisPairingApp() {
   }
 
   function getLoggedWinner(setNumber, court, teamA, teamB) {
-    const dateStr = sessionDate;
+    const dateStr = loggingContextRef.current.date;
     const found = history.find((h) => h.id === `${dateStr}-set${setNumber}-court${court}-${matchIdentity(teamA, teamB)}`);
     return found ? found.winner : null;
   }
@@ -2927,7 +3011,23 @@ export default function TennisPairingApp() {
     .sort((a, b) => a.name.localeCompare(b.name));
   const loggedMatches = [...history].sort((a, b) => (a.date < b.date ? 1 : -1));
   const insights = buildInsights(directory, history);
-  const drift = scheduleDrift(schedule, playingIds);
+  // Watching someone else's sheet swaps what Results renders - nothing else. This
+  // browser's own sheet is untouched underneath and comes straight back.
+  const watching = !!(viewingKey && viewingSheet && viewingSheet.state && viewingSheet.state.schedule);
+  const shownSchedule = watching ? viewingSheet.state.schedule : schedule;
+  const shownPlayingIds = watching ? (viewingSheet.state.playingIds || []) : playingIds;
+  // A result logged off someone else's sheet belongs to THEIR session - their date, their
+  // player names. Filing it under this browser's own date would put it on the wrong day
+  // and stop the winner showing as logged when anyone looks at that sheet again.
+  const shownSessionDate = watching ? (viewingSheet.state.sessionDate || sessionDate) : sessionDate;
+  loggingContextRef.current = {
+    date: shownSessionDate,
+    playerMap: (shownSchedule && shownSchedule.playerMap) || {},
+  };
+  const drift = scheduleDrift(shownSchedule, shownPlayingIds);
+  // Today shows this browser's own list, so it only ever warns about this browser's own
+  // sheet - someone else's mismatch is not something to raise there.
+  const ownDrift = scheduleDrift(schedule, playingIds);
   const winStreaks = {};
   directory.forEach((p) => { winStreaks[p.id] = computeWinStreak(p.id, history); });
 
@@ -3219,16 +3319,25 @@ export default function TennisPairingApp() {
                     <div className="tp-card p-3 mt-2 space-y-2">
                       <div className="text-xs" style={{ color: 'var(--muted)' }}>
                         Each browser keeps its own sheet, so these belong to other people or to your
-                        own other devices. Taking a copy pulls the latest version of one into this
-                        browser to work on, including any hand adjustments — it never changes theirs.
-                        Empty sheets aren't listed, since there'd be nothing to copy.
+                        own other devices. <strong>Watch</strong> shows one as it stands, hand
+                        adjustments and all, leaving both sheets alone — that's usually what you
+                        want. <strong>Copy</strong> pulls it onto this browser to work on, which
+                        replaces whatever is on yours. Empty sheets aren't listed.
                       </div>
                       {otherSessions.map((entry) => (
-                        <div key={entry.key} className="flex items-center gap-2">
-                          <span className="flex-1 text-xs">
+                        <div key={entry.key} className="flex items-center gap-2 flex-wrap">
+                          <span className="flex-1 text-xs" style={{ minWidth: '7rem' }}>
                             {describeSession(entry.state)}
                             <span className="block" style={{ color: 'var(--muted)' }}>{freshnessLabel(entry.state)}</span>
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => openSessionView(entry)}
+                            className="tp-focus px-2.5 py-1.5 text-xs font-semibold rounded-md shrink-0"
+                            style={{ background: 'var(--court)', color: '#fff' }}
+                          >
+                            {viewingKey === entry.key ? 'Watching' : 'Watch'}
+                          </button>
                           <button
                             type="button"
                             onClick={() => adoptSessionCopy(entry)}
@@ -3236,12 +3345,12 @@ export default function TennisPairingApp() {
                             className="tp-input tp-focus px-2 py-1.5 text-xs shrink-0"
                             style={{ color: 'var(--court)', opacity: copyingSessionKey !== null ? 0.5 : 1 }}
                           >
-                            {copyingSessionKey === entry.key ? 'Copying…' : 'Take a copy'}
+                            {copyingSessionKey === entry.key ? 'Copying…' : 'Copy'}
                           </button>
                         </div>
                       ))}
                       <div className="text-xs" style={{ color: 'var(--clay)' }}>
-                        Taking a copy replaces what's currently on this browser's sheet.
+                        Copying replaces what's currently on this browser's sheet. Watching doesn't.
                       </div>
                       <div className="text-xs" style={{ color: 'var(--muted)' }}>
                         Sheets clear themselves once they've sat untouched for 8 days and their
@@ -3530,14 +3639,14 @@ export default function TennisPairingApp() {
               {/* Said here too, because this is the tab where the list changes - the moment
                   the pairings stop matching it. Not dismissible: this is a state to fix,
                   not a tip to learn. */}
-              {drift && (
+              {ownDrift && (
                 <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg" style={{ background: 'var(--warn-tint)', borderLeft: '3px solid var(--warn)' }}>
                   <span className="flex-1 text-xs" style={{ color: 'var(--ink)', lineHeight: 1.45 }}>
                     The pairings were built for a different group.
                   </span>
                   <button
                     type="button"
-                    onClick={() => { setTab('results'); recordTab('results'); }}
+                    onClick={() => { closeSessionView(); setTab('results'); recordTab('results'); }}
                     className="tp-focus shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md whitespace-nowrap"
                     style={{ background: 'var(--warn)', color: '#fff' }}
                   >
@@ -3546,7 +3655,7 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
-              {!hintsDismissed && canGenerate && !drift && (
+              {!hintsDismissed && canGenerate && !ownDrift && (
                 <NextStepHint
                   text={`${playingCount} marked in. Next, choose your sets.`}
                   actionLabel="Courts →"
@@ -4619,10 +4728,48 @@ export default function TennisPairingApp() {
 
           {tab === 'results' && (
             <div className="px-4 sm:px-5 py-4 space-y-6">
-              {!schedule && (
+              {watching && (
+                <div className="px-3 py-2.5 rounded-lg" style={{ background: 'var(--court-tint)', borderLeft: '3px solid var(--court)' }}>
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 text-sm font-semibold" style={{ color: 'var(--court)' }}>
+                      Watching another browser&apos;s sheet
+                    </span>
+                    <button
+                      type="button"
+                      onClick={closeSessionView}
+                      className="tp-focus shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md whitespace-nowrap"
+                      style={{ background: 'var(--court)', color: '#fff' }}
+                    >
+                      Back to mine
+                    </button>
+                  </div>
+                  <div className="text-xs mt-1" style={{ color: 'var(--court)', lineHeight: 1.5 }}>
+                    {describeSession(viewingSheet.state)} · {freshnessLabel(viewingSheet.state)}.{' '}
+                    These are their pairings as they stand now, hand adjustments included. Marking a
+                    winner here records it for everyone; it doesn&apos;t change their sheet.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => loadViewingSheet(viewingKey)}
+                    disabled={viewingBusy}
+                    className="tp-focus mt-2 text-xs font-semibold"
+                    style={{ color: 'var(--court)', background: 'transparent', opacity: viewingBusy ? 0.5 : 1 }}
+                  >
+                    {viewingBusy ? 'Checking…' : 'Check for changes'}
+                  </button>
+                </div>
+              )}
+
+              {viewingError && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--warn-tint)', color: 'var(--ink)' }}>
+                  {viewingError}
+                </div>
+              )}
+
+              {!shownSchedule && (
                 <div className="text-sm text-center py-10" style={{ color: 'var(--muted)' }}>No pairings yet. Set up your courts and sets, then generate.</div>
               )}
-              {!hintsDismissed && schedule && (
+              {!hintsDismissed && shownSchedule && (
                 <NextStepHint
                   text="Tap the winning pair as each set finishes — that's what builds the records."
                   onDismiss={dismissHints}
@@ -4632,7 +4779,7 @@ export default function TennisPairingApp() {
               {drift && (() => {
                 const nameOf = (id) => {
                   const p = directory.find((x) => x.id === id)
-                    || (schedule.playerMap ? schedule.playerMap[id] : null);
+                    || (shownSchedule.playerMap ? shownSchedule.playerMap[id] : null);
                   return p ? p.name : 'someone no longer in the directory';
                 };
                 const list = (ids) => ids.map(nameOf).join(', ');
@@ -4648,24 +4795,31 @@ export default function TennisPairingApp() {
                       {drift.missing.length > 0 && (
                         <span>Playing but not on the sheet: <strong>{list(drift.missing)}</strong>. </span>
                       )}
-                      Regenerating rebuilds every set and discards any hand adjustments.
+                      {watching
+                        ? "That's how their sheet stands — only they can rebuild it."
+                        : 'Regenerating rebuilds every set and discards any hand adjustments.'}
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleGenerate}
-                      className="tp-focus tp-input mt-2 px-3 py-1.5 text-xs font-semibold"
-                      style={{ color: 'var(--court)' }}
-                    >
-                      Regenerate pairings
-                    </button>
+                    {!watching && (
+                      <button
+                        type="button"
+                        onClick={handleGenerate}
+                        className="tp-focus tp-input mt-2 px-3 py-1.5 text-xs font-semibold"
+                        style={{ color: 'var(--court)' }}
+                      >
+                        Regenerate pairings
+                      </button>
+                    )}
                   </div>
                 );
               })()}
 
-              {schedule && schedule.rounds.map((round, ri) => (
+              {shownSchedule && shownSchedule.rounds.map((round, ri) => (
                 <div key={ri}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="tp-display text-lg font-bold" style={{ color: 'var(--court)' }}>SET {ri + 1}</div>
+                    {/* Hidden while watching: adjusting would quietly edit this browser's own
+                        sheet rather than the one on screen. */}
+                    {!watching && (
                     <button
                       type="button"
                       onClick={() => {
@@ -4681,6 +4835,7 @@ export default function TennisPairingApp() {
                     >
                       {editingRoundIndex === ri ? 'Done' : 'Adjust'}
                     </button>
+                    )}
                   </div>
                   {editingRoundIndex === ri && (
                     <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>
@@ -4689,17 +4844,17 @@ export default function TennisPairingApp() {
                   )}
                   <div className="space-y-3">
                     {round.matches.map((m, mi) => {
-                      const skillA = avgSkill(m.teamA, schedule.playerMap);
-                      const skillB = avgSkill(m.teamB, schedule.playerMap);
+                      const skillA = avgSkill(m.teamA, shownSchedule.playerMap);
+                      const skillB = avgSkill(m.teamB, shownSchedule.playerMap);
                       const total = skillA + skillB || 1;
                       const court = String(m.courtNumber || (mi + 1));
                       const winner = getLoggedWinner(ri + 1, court, m.teamA, m.teamB);
                       const recordId = `${sessionDate}-set${ri + 1}-court${court}-${matchIdentity(m.teamA, m.teamB)}`;
                       const isCelebrating = celebratingMatchId === recordId;
-                      const notesA = m.teamA.map((id) => schedule.playerMap[id]).filter((pl) => pl.comments);
-                      const notesB = m.teamB.map((id) => schedule.playerMap[id]).filter((pl) => pl.comments);
+                      const notesA = m.teamA.map((id) => shownSchedule.playerMap[id]).filter((pl) => pl.comments);
+                      const notesB = m.teamB.map((id) => shownSchedule.playerMap[id]).filter((pl) => pl.comments);
                       const editing = editingRoundIndex === ri;
-                      const feedback = editing ? matchFeedback(m, schedule.rounds, ri, schedule.playerMap) : null;
+                      const feedback = editing ? matchFeedback(m, shownSchedule.rounds, ri, shownSchedule.playerMap) : null;
                       const otherCourtNumbers = round.matches.filter((_, i) => i !== mi).map((om, omi) => String(om.courtNumber || (omi + 1)));
                       const courtClash = editing && otherCourtNumbers.includes(court);
                       // Adjusting: a tap selects for a swap, as before. Not adjusting: a tap
@@ -4717,7 +4872,7 @@ export default function TennisPairingApp() {
                                 color: selectedPlayerId === id ? '#fff' : 'var(--court)',
                               }}
                             >
-                              {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
+                              {shownSchedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
                             </button>
                           ))}
                         </div>
@@ -4732,7 +4887,7 @@ export default function TennisPairingApp() {
                                 className="tp-focus font-semibold tp-oncourt"
                                 style={{ background: 'transparent', textDecorationLine: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: '2px', textDecorationColor: 'var(--line)' }}
                               >
-                                {schedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
+                                {shownSchedule.playerMap[id].name}{winStreaks[id] >= 3 ? ` 🔥${winStreaks[id]}` : ''}
                               </button>
                             </React.Fragment>
                           ))}
@@ -4811,7 +4966,7 @@ export default function TennisPairingApp() {
                                 className="tp-winbtn tp-focus flex-1 py-1.5 text-xs"
                                 data-won={winner === 'A'}
                               >
-                                {m.teamA.map((id) => schedule.playerMap[id].name).join(' & ')}
+                                {m.teamA.map((id) => shownSchedule.playerMap[id].name).join(' & ')}
                               </button>
                               <button
                                 type="button"
@@ -4819,7 +4974,7 @@ export default function TennisPairingApp() {
                                 className="tp-winbtn tp-focus flex-1 py-1.5 text-xs"
                                 data-won={winner === 'B'}
                               >
-                                {m.teamB.map((id) => schedule.playerMap[id].name).join(' & ')}
+                                {m.teamB.map((id) => shownSchedule.playerMap[id].name).join(' & ')}
                               </button>
                             </div>
                           )}
@@ -4846,18 +5001,18 @@ export default function TennisPairingApp() {
                                 color: selectedPlayerId === id ? '#fff' : 'var(--muted)',
                               }}
                             >
-                              {schedule.playerMap[id].name}
+                              {shownSchedule.playerMap[id].name}
                             </button>
                           ))}
                         </div>
                       ) : (
-                        <>Sitting out: {round.sittingOut.map((id) => schedule.playerMap[id].name).join(', ')}</>
+                        <>Sitting out: {round.sittingOut.map((id) => shownSchedule.playerMap[id].name).join(', ')}</>
                       )}
                     </div>
                   )}
                 </div>
               ))}
-              {schedule && (() => {
+              {shownSchedule && (() => {
                 // A key for the badge, sitting with the sheet itself. The sheet gets screenshotted
                 // into the club chat, where there is nothing to tap and no way to ask - so the
                 // explanation has to travel with the picture.
@@ -4870,12 +5025,14 @@ export default function TennisPairingApp() {
                 );
               })()}
 
-              {schedule && (
+              {shownSchedule && (
                 <div className="space-y-2">
-                  <button type="button" onClick={handleGenerate} className="tp-focus w-full py-2.5 flex items-center justify-center gap-2 text-sm rounded-lg border" style={{ borderColor: 'var(--line)', color: 'var(--court)' }}>
-                    <Shuffle size={15} />
-                    Re-roll pairings
-                  </button>
+                  {!watching && (
+                    <button type="button" onClick={handleGenerate} className="tp-focus w-full py-2.5 flex items-center justify-center gap-2 text-sm rounded-lg border" style={{ borderColor: 'var(--line)', color: 'var(--court)' }}>
+                      <Shuffle size={15} />
+                      Re-roll pairings
+                    </button>
+                  )}
                   <button type="button" onClick={handleCopyForGroupMe} className="tp-btn-secondary tp-focus w-full py-2.5 flex items-center justify-center gap-2 text-sm">
                     <Upload size={15} />
                     {copyStatus === 'copied' ? 'Copied!' : 'Copy for GroupMe'}
