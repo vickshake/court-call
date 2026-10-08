@@ -76,6 +76,15 @@ function computeWinStreak(playerId, history) {
    Regenerating automatically would be worse: it would silently discard the hand
    adjustments the organizer made, which is the whole reason Adjust exists. So the
    mismatch is surfaced and the choice is left to a person.                        */
+// Whether a sheet belongs to the session now on screen. Sheets saved before pairings
+// carried a date have no stamp - those are taken at face value rather than blanking
+// everybody's current sheet on upgrade.
+function scheduleIsForSession(schedule, sessionDate) {
+  if (!schedule) return false;
+  if (!schedule.generatedFor) return true;
+  return schedule.generatedFor === sessionDate;
+}
+
 function scheduleDrift(schedule, playingIds) {
   if (!schedule || !Array.isArray(schedule.rounds)) return null;
   const inSheet = new Set();
@@ -2698,6 +2707,10 @@ export default function TennisPairingApp() {
     scheduleTouchedRef.current = false; // a fresh draft starts untouched
     const players = directory.filter((p) => playingIds.includes(p.id));
     const result = generateSchedule(players, setFormats);
+    // Stamped with the session it was built for. Without this a sheet outlives its own
+    // day: change the date to next week and last week's pairings are still sitting there,
+    // presented as this week's.
+    result.generatedFor = sessionDate;
     persistWeekly({ schedule: result });
     setTab('results');
   }
@@ -3020,6 +3033,11 @@ export default function TennisPairingApp() {
   // player names. Filing it under this browser's own date would put it on the wrong day
   // and stop the winner showing as logged when anyone looks at that sheet again.
   const shownSessionDate = watching ? (viewingSheet.state.sessionDate || sessionDate) : sessionDate;
+  // Pairings built for another day are not this session's, however they got here - a date
+  // changed by hand, or a copy of somebody else's sheet that had rolled over.
+  const scheduleForOtherDay = shownSchedule && !scheduleIsForSession(shownSchedule, shownSessionDate)
+    ? shownSchedule.generatedFor
+    : null;
   loggingContextRef.current = {
     date: shownSessionDate,
     playerMap: (shownSchedule && shownSchedule.playerMap) || {},
@@ -3027,7 +3045,8 @@ export default function TennisPairingApp() {
   const drift = scheduleDrift(shownSchedule, shownPlayingIds);
   // Today shows this browser's own list, so it only ever warns about this browser's own
   // sheet - someone else's mismatch is not something to raise there.
-  const ownDrift = scheduleDrift(schedule, playingIds);
+  const ownScheduleForOtherDay = schedule && !scheduleIsForSession(schedule, sessionDate);
+  const ownDrift = ownScheduleForOtherDay ? null : scheduleDrift(schedule, playingIds);
   const winStreaks = {};
   directory.forEach((p) => { winStreaks[p.id] = computeWinStreak(p.id, history); });
 
@@ -4769,14 +4788,39 @@ export default function TennisPairingApp() {
               {!shownSchedule && (
                 <div className="text-sm text-center py-10" style={{ color: 'var(--muted)' }}>No pairings yet. Set up your courts and sets, then generate.</div>
               )}
-              {!hintsDismissed && shownSchedule && (
+
+              {scheduleForOtherDay && (
+                <div className="px-3 py-3 rounded-lg" style={{ background: 'var(--warn-tint)', borderLeft: '3px solid var(--warn)' }}>
+                  <div className="text-sm font-semibold">No pairings for this session yet</div>
+                  <div className="text-xs mt-1" style={{ lineHeight: 1.5 }}>
+                    The pairings on {watching ? 'that' : 'this'} sheet were made for{' '}
+                    <strong>{formatSessionDate(scheduleForOtherDay)}</strong>, so they describe a
+                    different day&apos;s session.
+                    {watching
+                      ? ' They may not have been rebuilt for this one yet.'
+                      : ` Generate to pair the ${shownPlayingIds.length} ${shownPlayingIds.length === 1 ? 'person' : 'people'} playing on ${formatSessionDate(shownSessionDate)}.`}
+                  </div>
+                  {!watching && (
+                    <button
+                      type="button"
+                      onClick={handleGenerate}
+                      disabled={!canGenerate}
+                      className="tp-btn-primary tp-focus mt-2.5 w-full py-2.5 flex items-center justify-center gap-2 text-sm"
+                    >
+                      <Shuffle size={15} />
+                      Generate Pairings
+                    </button>
+                  )}
+                </div>
+              )}
+              {!hintsDismissed && shownSchedule && !scheduleForOtherDay && (
                 <NextStepHint
                   text="Tap the winning pair as each set finishes — that's what builds the records."
                   onDismiss={dismissHints}
                 />
               )}
 
-              {drift && (() => {
+              {drift && !scheduleForOtherDay && (() => {
                 const nameOf = (id) => {
                   const p = directory.find((x) => x.id === id)
                     || (shownSchedule.playerMap ? shownSchedule.playerMap[id] : null);
@@ -4813,7 +4857,7 @@ export default function TennisPairingApp() {
                 );
               })()}
 
-              {shownSchedule && shownSchedule.rounds.map((round, ri) => (
+              {shownSchedule && !scheduleForOtherDay && shownSchedule.rounds.map((round, ri) => (
                 <div key={ri}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="tp-display text-lg font-bold" style={{ color: 'var(--court)' }}>SET {ri + 1}</div>
@@ -5012,7 +5056,7 @@ export default function TennisPairingApp() {
                   )}
                 </div>
               ))}
-              {shownSchedule && (() => {
+              {shownSchedule && !scheduleForOtherDay && (() => {
                 // A key for the badge, sitting with the sheet itself. The sheet gets screenshotted
                 // into the club chat, where there is nothing to tap and no way to ask - so the
                 // explanation has to travel with the picture.
@@ -5025,7 +5069,7 @@ export default function TennisPairingApp() {
                 );
               })()}
 
-              {shownSchedule && (
+              {shownSchedule && !scheduleForOtherDay && (
                 <div className="space-y-2">
                   {!watching && (
                     <button type="button" onClick={handleGenerate} className="tp-focus w-full py-2.5 flex items-center justify-center gap-2 text-sm rounded-lg border" style={{ borderColor: 'var(--line)', color: 'var(--court)' }}>
