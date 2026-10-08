@@ -67,6 +67,31 @@ function computeWinStreak(playerId, history) {
   return streak;
 }
 
+/* ---- schedule freshness ------------------------------------------------------
+   A generated sheet is a snapshot of who was playing at the moment it was built.
+   Marking someone in or out afterwards does not rebuild it, so the pairings can
+   quietly describe a different group than the one that turned up - people listed
+   who went home, people playing who appear nowhere.
+
+   Regenerating automatically would be worse: it would silently discard the hand
+   adjustments the organizer made, which is the whole reason Adjust exists. So the
+   mismatch is surfaced and the choice is left to a person.                        */
+function scheduleDrift(schedule, playingIds) {
+  if (!schedule || !Array.isArray(schedule.rounds)) return null;
+  const inSheet = new Set();
+  schedule.rounds.forEach((r) => {
+    (r.matches || []).forEach((m) => {
+      [...(m.teamA || []), ...(m.teamB || [])].forEach((id) => inSheet.add(id));
+    });
+    (r.sittingOut || []).forEach((id) => inSheet.add(id));
+  });
+  const playing = new Set(playingIds || []);
+  const ghosts = [...inSheet].filter((id) => !playing.has(id));   // on the sheet, not playing
+  const missing = [...playing].filter((id) => !inSheet.has(id));  // playing, not on the sheet
+  if (!ghosts.length && !missing.length) return null;
+  return { ghosts, missing };
+}
+
 /* ---- directory insights -----------------------------------------------------
    Answers one question a plain win/loss column cannot: does a player's rating match
    their results? Overall record mostly reflects who they were paired WITH, since the
@@ -2902,6 +2927,7 @@ export default function TennisPairingApp() {
     .sort((a, b) => a.name.localeCompare(b.name));
   const loggedMatches = [...history].sort((a, b) => (a.date < b.date ? 1 : -1));
   const insights = buildInsights(directory, history);
+  const drift = scheduleDrift(schedule, playingIds);
   const winStreaks = {};
   directory.forEach((p) => { winStreaks[p.id] = computeWinStreak(p.id, history); });
 
@@ -3501,7 +3527,26 @@ export default function TennisPairingApp() {
                 </div>
               )}
 
-              {!hintsDismissed && canGenerate && (
+              {/* Said here too, because this is the tab where the list changes - the moment
+                  the pairings stop matching it. Not dismissible: this is a state to fix,
+                  not a tip to learn. */}
+              {drift && (
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg" style={{ background: 'var(--warn-tint)', borderLeft: '3px solid var(--warn)' }}>
+                  <span className="flex-1 text-xs" style={{ color: 'var(--ink)', lineHeight: 1.45 }}>
+                    The pairings were built for a different group.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setTab('results'); recordTab('results'); }}
+                    className="tp-focus shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md whitespace-nowrap"
+                    style={{ background: 'var(--warn)', color: '#fff' }}
+                  >
+                    Review →
+                  </button>
+                </div>
+              )}
+
+              {!hintsDismissed && canGenerate && !drift && (
                 <NextStepHint
                   text={`${playingCount} marked in. Next, choose your sets.`}
                   actionLabel="Courts →"
@@ -4583,6 +4628,39 @@ export default function TennisPairingApp() {
                   onDismiss={dismissHints}
                 />
               )}
+
+              {drift && (() => {
+                const nameOf = (id) => {
+                  const p = directory.find((x) => x.id === id)
+                    || (schedule.playerMap ? schedule.playerMap[id] : null);
+                  return p ? p.name : 'someone no longer in the directory';
+                };
+                const list = (ids) => ids.map(nameOf).join(', ');
+                return (
+                  <div className="px-3 py-2.5 rounded-lg" style={{ background: 'var(--warn-tint)', borderLeft: '3px solid var(--warn)' }}>
+                    <div className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>
+                      These pairings don&apos;t match who&apos;s playing
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: 'var(--ink)', lineHeight: 1.5 }}>
+                      {drift.ghosts.length > 0 && (
+                        <span>On the sheet but not playing: <strong>{list(drift.ghosts)}</strong>. </span>
+                      )}
+                      {drift.missing.length > 0 && (
+                        <span>Playing but not on the sheet: <strong>{list(drift.missing)}</strong>. </span>
+                      )}
+                      Regenerating rebuilds every set and discards any hand adjustments.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleGenerate}
+                      className="tp-focus tp-input mt-2 px-3 py-1.5 text-xs font-semibold"
+                      style={{ color: 'var(--court)' }}
+                    >
+                      Regenerate pairings
+                    </button>
+                  </div>
+                );
+              })()}
 
               {schedule && schedule.rounds.map((round, ri) => (
                 <div key={ri}>
