@@ -2909,6 +2909,13 @@ export default function TennisPairingApp() {
     <div className="tp-root w-full" style={{ minHeight: '100%' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+        /* A single child that cannot shrink below its content sets a minimum width for
+           the whole page, and the viewport then scrolls sideways - the header clips on
+           the left while everything else runs off the right. Containing it here means
+           one over-wide element can never shift the entire layout again. */
+        .tp-root { overflow-x: hidden; max-width: 100%; }
+        .tp-root * { min-width: 0; }
+
         .tp-root {
           --bg: #F6F7F4; --surface: #FFFFFF; --ink: #1C211D; --muted: #5A6157;
           --court: #1E5631; --court-tint: #E7F0E9; --clay: #9C4A28; --clay-tint: #F3E4DC;
@@ -3068,17 +3075,24 @@ export default function TennisPairingApp() {
             <div className="px-4 sm:px-5 py-4 space-y-5">
               <div className="tp-card p-3">
                 <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--muted)' }}>Playing on</label>
-                <div className="flex gap-2">
+                {/* Wraps rather than staying three-across. A phone cannot fit three controls
+                    at a readable size, and a row that refuses to wrap sets a minimum width the
+                    viewport can't meet - which pushes the whole page sideways, not just this row.
+                    The date takes the full first line; time and duration share the second. */}
+                <div className="flex gap-2 flex-wrap">
                   <input
                     type="date"
                     value={sessionDate}
                     onChange={(e) => persistWeekly({ sessionDate: e.target.value })}
-                    className="tp-focus tp-input px-3 py-2 text-sm flex-1"
+                    className="tp-focus tp-input px-3 py-2 text-sm"
+                    style={{ flex: '1 1 10rem', minWidth: 0 }}
                   />
                   <select
                     value={sessionTime}
                     onChange={(e) => persistWeekly({ sessionTime: e.target.value })}
-                    className="tp-focus tp-input px-3 py-2 text-sm flex-1 bg-white"
+                    className="tp-focus tp-input px-3 py-2 text-sm bg-white"
+                    style={{ flex: '1 1 7rem', minWidth: 0 }}
+                    aria-label="Start time"
                   >
                     <option value="">Time?</option>
                     {TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatSessionTime(t)}</option>)}
@@ -3087,10 +3101,11 @@ export default function TennisPairingApp() {
                     value={sessionDuration}
                     onChange={(e) => persistWeekly({ sessionDuration: e.target.value })}
                     disabled={!sessionTime}
-                    className="tp-focus tp-input px-3 py-2 text-sm flex-1 bg-white"
-                    style={{ opacity: sessionTime ? 1 : 0.5 }}
+                    className="tp-focus tp-input px-3 py-2 text-sm bg-white"
+                    style={{ opacity: sessionTime ? 1 : 0.5, flex: '1 1 7rem', minWidth: 0 }}
+                    aria-label="How long"
                   >
-                    <option value="">For how long?</option>
+                    <option value="">How long?</option>
                     {DURATION_OPTIONS.map((d) => <option key={d} value={d}>{formatDuration(d)}</option>)}
                   </select>
                 </div>
