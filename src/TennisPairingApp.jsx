@@ -568,7 +568,9 @@ function formatScheduleForGroupMe(schedule) {
     round.matches.forEach((m, mi) => {
       const teamA = m.teamA.map((id) => schedule.playerMap[id].name).join(' & ');
       const teamB = m.teamB.map((id) => schedule.playerMap[id].name).join(' & ');
-      lines.push(`Court ${mi + 1} (${m.format}): ${teamA} vs ${teamB}`);
+      // The real court, not its position in the list - the two differ whenever courts
+      // 1-4 aren't all in play, and the sheet has to match the courts people walk onto.
+      lines.push(`Court ${m.courtNumber || mi + 1} (${m.format}): ${teamA} vs ${teamB}`);
     });
     if (round.sittingOut.length > 0) {
       lines.push(`Sitting out: ${round.sittingOut.map((id) => schedule.playerMap[id].name).join(', ')}`);
@@ -577,6 +579,172 @@ function formatScheduleForGroupMe(schedule) {
   return lines.join('\n');
 }
 
+
+/* ---- the sheet as a picture ---------------------------------------------------
+   Pasting text out of a browser on a phone is a fiddly, three-gesture business, so
+   the sheet people actually post to the club chat is a screenshot. This draws that
+   picture properly instead: every set in one image however long the list, no browser
+   chrome, no scrolling, and type sized to be read at a glance rather than pinched.
+
+   The layout is worked out separately from the drawing so it can be checked without
+   a canvas, and so the height is known before the canvas is made.               */
+const SHEET_W = 1000;
+const SHEET_PAD = 48;
+
+function layoutShareSheet(schedule, meta) {
+  const blocks = [];
+  let y = SHEET_PAD;
+
+  blocks.push({ kind: 'wordmark', text: 'COURT CALL', y });
+  y += 62;
+  if (meta && meta.subtitle) {
+    blocks.push({ kind: 'subtitle', text: meta.subtitle, y });
+    y += 42;
+  }
+  y += 6;
+  blocks.push({ kind: 'rule', y });
+  y += 30;
+
+  schedule.rounds.forEach((round, ri) => {
+    blocks.push({ kind: 'set', text: `SET ${ri + 1}`, y });
+    y += 48;
+
+    round.matches.forEach((m, mi) => {
+      const nameOf = (id) => (schedule.playerMap[id] ? schedule.playerMap[id].name : '?');
+      const teamA = m.teamA.map(nameOf).join(' & ');
+      const teamB = m.teamB.map(nameOf).join(' & ');
+      const header = `COURT ${m.courtNumber || mi + 1} · ${String(m.format || 'Doubles').toUpperCase()}`;
+      // Two team lines plus the divider, inside a card.
+      const h = 34 + 46 + 30 + 46 + 26;
+      blocks.push({ kind: 'match', y, h, header, teamA, teamB });
+      y += h + 14;
+    });
+
+    if (round.sittingOut && round.sittingOut.length) {
+      const names = round.sittingOut
+        .map((id) => (schedule.playerMap[id] ? schedule.playerMap[id].name : '?'))
+        .join(', ');
+      blocks.push({ kind: 'sitting', text: `Sitting out: ${names}`, y });
+      y += 40;
+    }
+    y += 22;
+  });
+
+  y += 6;
+  blocks.push({ kind: 'rule', y });
+  y += 32;
+  blocks.push({ kind: 'footer', text: 'court-call.web.app', y });
+  y += SHEET_PAD;
+
+  return { blocks, width: SHEET_W, height: Math.round(y) };
+}
+
+// Draws the laid-out sheet. Kept thin on purpose: everything that decides WHERE
+// things go lives in layoutShareSheet, which needs no canvas to check.
+function drawShareSheet(schedule, meta) {
+  const { blocks, width, height } = layoutShareSheet(schedule, meta);
+  const scale = 2; // so it stays sharp when a chat app scales it up
+  const canvas = document.createElement('canvas');
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(scale, scale);
+
+  const INK = '#1C211D';
+  const MUTED = '#5A6157';
+  const COURT = '#1E5631';
+  const LINE = '#DDE2DA';
+
+  ctx.fillStyle = '#F6F7F4';
+  ctx.fillRect(0, 0, width, height);
+
+  const sans = (size, weight) => `${weight || 400} ${size}px "IBM Plex Sans", system-ui, sans-serif`;
+  const display = (size) => `700 ${size}px "Big Shoulders Display", "IBM Plex Sans", system-ui, sans-serif`;
+
+  // Long names get scaled down rather than clipped - a cut-off surname is worse than
+  // slightly smaller type.
+  const fitText = (text, maxW, startSize, weight) => {
+    let size = startSize;
+    ctx.font = sans(size, weight);
+    while (ctx.measureText(text).width > maxW && size > 18) {
+      size -= 1;
+      ctx.font = sans(size, weight);
+    }
+    return size;
+  };
+
+  blocks.forEach((b) => {
+    if (b.kind === 'wordmark') {
+      ctx.fillStyle = INK;
+      ctx.font = display(50);
+      ctx.fillText('COURT ', SHEET_PAD, b.y + 46);
+      const w = ctx.measureText('COURT ').width;
+      ctx.fillStyle = COURT;
+      ctx.fillText('CALL', SHEET_PAD + w, b.y + 46);
+    } else if (b.kind === 'subtitle') {
+      ctx.fillStyle = MUTED;
+      ctx.font = sans(28, 400);
+      ctx.fillText(b.text, SHEET_PAD, b.y + 26);
+    } else if (b.kind === 'rule') {
+      ctx.fillStyle = COURT;
+      ctx.fillRect(SHEET_PAD, b.y, width - SHEET_PAD * 2, 3);
+    } else if (b.kind === 'set') {
+      ctx.fillStyle = COURT;
+      ctx.font = display(38);
+      ctx.fillText(b.text, SHEET_PAD, b.y + 32);
+    } else if (b.kind === 'match') {
+      const x = SHEET_PAD;
+      const w = width - SHEET_PAD * 2;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(x, b.y, w, b.h);
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, b.y + 0.5, w - 1, b.h - 1);
+
+      ctx.fillStyle = MUTED;
+      ctx.font = sans(20, 600);
+      ctx.fillText(b.header, x + 26, b.y + 34);
+
+      const maxW = w - 52;
+      ctx.fillStyle = INK;
+      let size = fitText(b.teamA, maxW, 32, 600);
+      ctx.font = sans(size, 600);
+      ctx.fillText(b.teamA, x + 26, b.y + 34 + 42);
+
+      ctx.fillStyle = MUTED;
+      ctx.font = sans(20, 400);
+      ctx.fillText('vs', x + 26, b.y + 34 + 42 + 28);
+
+      ctx.fillStyle = INK;
+      size = fitText(b.teamB, maxW, 32, 600);
+      ctx.font = sans(size, 600);
+      ctx.fillText(b.teamB, x + 26, b.y + 34 + 42 + 28 + 42);
+    } else if (b.kind === 'sitting') {
+      ctx.fillStyle = MUTED;
+      ctx.font = sans(24, 400);
+      ctx.fillText(b.text, SHEET_PAD, b.y + 24);
+    } else if (b.kind === 'footer') {
+      ctx.fillStyle = MUTED;
+      ctx.font = sans(22, 400);
+      ctx.fillText(b.text, SHEET_PAD, b.y + 20);
+    }
+  });
+
+  return canvas;
+}
+
+// A data URL converts to a file synchronously, which matters: a browser only honours
+// navigator.share inside the tap that triggered it, and an async canvas.toBlob breaks
+// that chain on some phones.
+function dataUrlToFile(dataUrl, filename) {
+  const [head, b64] = dataUrl.split(',');
+  const mime = (head.match(/:(.*?);/) || [])[1] || 'image/png';
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], filename, { type: mime });
+}
 
 function generateSchedule(players, setFormats) {
   const playerMap = {};
@@ -1668,6 +1836,7 @@ export default function TennisPairingApp() {
   const [editingRoundIndex, setEditingRoundIndex] = useState(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [copyStatus, setCopyStatus] = useState('');
+  const [shareStatus, setShareStatus] = useState('');
   const [saveError, setSaveError] = useState('');
   const [copyFallbackText, setCopyFallbackText] = useState('');
   const [importYear, setImportYear] = useState(String(THIS_YEAR));
@@ -2778,6 +2947,60 @@ export default function TennisPairingApp() {
     const newMatches = round.matches.map((m, i) => (i === matchIndex ? { ...m, courtNumber: newCourtNumber } : m));
     const newRounds = schedule.rounds.map((r, i) => (i === roundIndex ? { ...r, matches: newMatches } : r));
     persistWeekly({ schedule: { ...schedule, rounds: newRounds } });
+  }
+
+  async function handleShareSheet() {
+    recordAction('share_image');
+    const sheet = shownSchedule;
+    if (!sheet) return;
+    setShareStatus('working');
+
+    const subtitle = [
+      shownSessionDate ? formatSessionDate(shownSessionDate) : '',
+      watching ? (viewingSheet.state.sessionTime ? formatSessionTime(viewingSheet.state.sessionTime) : '') : (sessionTime ? formatSessionTime(sessionTime) : ''),
+    ].filter(Boolean).join(' · ');
+
+    let file = null;
+    let dataUrl = null;
+    try {
+      const canvas = drawShareSheet(sheet, { subtitle });
+      if (!canvas) throw new Error('no canvas');
+      dataUrl = canvas.toDataURL('image/png');
+      file = dataUrlToFile(dataUrl, 'court-call.png');
+    } catch {
+      // Drawing failed - the text copy is still there and still works.
+      setShareStatus('failed');
+      setTimeout(() => setShareStatus(''), 4000);
+      return;
+    }
+
+    // The share sheet is the point: it puts the club chat one tap away.
+    try {
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Court Call pairings' });
+        setShareStatus('shared');
+        setTimeout(() => setShareStatus(''), 2500);
+        return;
+      }
+    } catch (err) {
+      // Dismissing the share sheet throws too, and that is not a failure worth reporting.
+      if (err && err.name === 'AbortError') { setShareStatus(''); return; }
+    }
+
+    // No share sheet on this browser - save the image so it can be attached by hand.
+    try {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = 'court-call.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setShareStatus('saved');
+      setTimeout(() => setShareStatus(''), 5000);
+    } catch {
+      setShareStatus('failed');
+      setTimeout(() => setShareStatus(''), 4000);
+    }
   }
 
   async function handleCopyForGroupMe() {
@@ -5083,9 +5306,25 @@ export default function TennisPairingApp() {
                       Re-roll pairings
                     </button>
                   )}
+                  {/* The picture first: it is what actually gets posted, and it is one tap
+                      rather than copy, switch app, long-press, paste. */}
+                  <button type="button" onClick={handleShareSheet} disabled={shareStatus === 'working'} className="tp-btn-primary tp-focus w-full py-3 flex items-center justify-center gap-2 text-sm">
+                    <Upload size={16} />
+                    {shareStatus === 'working' ? 'Preparing…'
+                      : shareStatus === 'shared' ? 'Shared!'
+                      : shareStatus === 'saved' ? 'Saved to your photos'
+                      : shareStatus === 'failed' ? "Couldn't make the image — use Copy below"
+                      : 'Share the sheet'}
+                  </button>
+                  {shareStatus === 'saved' && (
+                    <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
+                      This browser has no share button, so the image was saved instead — attach it
+                      in GroupMe the way you would any photo.
+                    </div>
+                  )}
                   <button type="button" onClick={handleCopyForGroupMe} className="tp-btn-secondary tp-focus w-full py-2.5 flex items-center justify-center gap-2 text-sm">
                     <Upload size={15} />
-                    {copyStatus === 'copied' ? 'Copied!' : 'Copy for GroupMe'}
+                    {copyStatus === 'copied' ? 'Copied!' : 'Copy as text'}
                   </button>
                   {copyFallbackText && (
                     <div className="tp-card p-3 space-y-2">
