@@ -204,8 +204,8 @@ app is driven headlessly in jsdom against a mock `window.storage` that reproduce
 error tagging. Tests click real buttons and assert on what reaches storage rather than
 calling internals.
 
-Suites: `drift`, `layout`, `legacy`, `logging`, `session`, `share`, `smoke`, `stamp`,
-`watch`. Around 140 assertions.
+10 suites: `drift`, `layout`, `legacy`, `logging`, `persist`, `session`, `share`, `smoke`,
+`stamp`, `watch`. 160 assertions.
 
 Lint with `npx oxlint src/TennisPairingApp.jsx`. Baseline is 9 warnings — treat any
 increase as a regression.
@@ -277,4 +277,4 @@ silently using stale data, and a late arrival making a whole sheet vanish.
 
 ---
 
-*Court Call v0.80.0 · 5 November 2026*
+*Court Call v0.82.0 · 5 November 2026*
