@@ -79,15 +79,22 @@ function computeWinStreak(playerId, history) {
 // Whether a sheet belongs to the session now on screen. Sheets saved before pairings
 // carried a date have no stamp - those are taken at face value rather than blanking
 // everybody's current sheet on upgrade.
+// Three states, not two.
+//
+// The PEOPLE come first: a sheet holding exactly who is marked in is this session's
+// sheet, whatever its date stamp reads. Judging on the stamp alone hid good pairings
+// from an organizer who set the date after generating.
+//
+// When the people DO differ, the stamp says which kind of difference it is. Same day:
+// somebody arrived or went home since the sheet was made - show it and let a person
+// decide. Another day: it belongs to a previous session and is not this one's at all.
 function scheduleIsForSession(schedule, sessionDate, playingIds) {
   if (!schedule) return false;
+  if (!scheduleDrift(schedule, playingIds)) return true;
   if (schedule.generatedFor) return schedule.generatedFor === sessionDate;
-  // No stamp means it was built before pairings recorded their date. Taking those at face
-  // value unconditionally was too generous: a sheet carried over from a previous session
-  // has no stamp either, so last week's pairings sailed through as this week's. An
-  // unstamped sheet counts as this session's only while it still describes the people
-  // actually marked in.
-  return !scheduleDrift(schedule, playingIds);
+  // Unstamped and holding the wrong people: built before pairings carried a date, and
+  // carried over since.
+  return false;
 }
 
 function scheduleDrift(schedule, playingIds) {
@@ -3265,6 +3272,12 @@ export default function TennisPairingApp() {
   // changed by hand, or a copy of somebody else's sheet that had rolled over.
   const scheduleForOtherSession = shownSchedule && !scheduleIsForSession(shownSchedule, shownSessionDate, shownPlayingIds);
   const scheduleForOtherDay = scheduleForOtherSession ? (shownSchedule.generatedFor || null) : null;
+  // The sheet holds the right people but carries another day's stamp - usually the date
+  // was set or corrected after generating. Worth saying, not worth hiding the sheet for.
+  const scheduleStampedOtherDay = shownSchedule && !scheduleForOtherSession
+    && shownSchedule.generatedFor && shownSchedule.generatedFor !== shownSessionDate
+    ? shownSchedule.generatedFor
+    : null;
   loggingContextRef.current = {
     date: shownSessionDate,
     playerMap: (shownSchedule && shownSchedule.playerMap) || {},
@@ -5020,11 +5033,11 @@ export default function TennisPairingApp() {
                 <div className="px-3 py-3 rounded-lg" style={{ background: 'var(--warn-tint)', borderLeft: '3px solid var(--warn)' }}>
                   <div className="text-sm font-semibold">No pairings for this session yet</div>
                   <div className="text-xs mt-1" style={{ lineHeight: 1.5 }}>
-                    The pairings on {watching ? 'that' : 'this'} sheet were made{' '}
+                    The pairings on {watching ? 'that' : 'this'} sheet describe a different
+                    group than the {shownPlayingIds.length} marked in
                     {scheduleForOtherDay
-                      ? <>for <strong>{formatSessionDate(scheduleForOtherDay)}</strong></>
-                      : <>for an earlier session</>}
-                    , so they describe a different group than the one marked in.
+                      ? <> — they were made for <strong>{formatSessionDate(scheduleForOtherDay)}</strong></>
+                      : <> — they were made for an earlier session</>}.
                     {watching
                       ? ' They may not have been rebuilt for this one yet.'
                       : ` Generate to pair the ${shownPlayingIds.length} ${shownPlayingIds.length === 1 ? 'person' : 'people'} playing on ${formatSessionDate(shownSessionDate)}.`}
@@ -5085,6 +5098,15 @@ export default function TennisPairingApp() {
                   </div>
                 );
               })()}
+
+              {scheduleStampedOtherDay && (
+                <div className="text-xs px-3 py-2 rounded-lg" style={{ background: '#F1F1EE', color: 'var(--muted)', lineHeight: 1.5 }}>
+                  These pairings hold everyone marked in, but were generated for{' '}
+                  <strong>{formatSessionDate(scheduleStampedOtherDay)}</strong> — the date was
+                  probably set after they were made.
+                  {watching ? '' : ' Re-roll below if you want a fresh draw.'}
+                </div>
+              )}
 
               {shownSchedule && !scheduleForOtherSession && shownSchedule.rounds.map((round, ri) => (
                 <div key={ri}>
