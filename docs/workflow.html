@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="base.css">
+<style>
+  .lane { display: flex; align-items: stretch; margin-bottom: 9pt; }
+  .lane-label {
+    width: 74pt; flex: 0 0 74pt; padding-right: 10pt; padding-top: 9pt;
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+    font-size: 7pt; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted);
+  }
+  .lane-body { flex: 1; display: flex; align-items: stretch; }
+  .step {
+    flex: 1; background: var(--surface); border: 0.7pt solid var(--line);
+    border-top: 2.4pt solid var(--court); padding: 7pt 9pt;
+  }
+  .step.manual { border-top-color: var(--clay); background: #FDF9F7; }
+  .step .n {
+    font-family: "Liberation Mono", monospace; font-size: 6.8pt;
+    letter-spacing: 0.1em; color: var(--clay); margin-bottom: 2.5pt;
+  }
+  .step h4 {
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+    font-size: 9.4pt; margin: 0 0 3pt 0; line-height: 1.12;
+  }
+  .step p { margin: 0; font-size: 7.9pt; line-height: 1.4; color: #3B423C; }
+  .join {
+    flex: 0 0 16pt; display: flex; align-items: center; justify-content: center;
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-size: 12pt; color: var(--court);
+  }
+  .join.clay { color: var(--clay); }
+  .who {
+    display: flex; gap: 16pt; align-items: center; margin-top: 2pt;
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-size: 7pt;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  }
+  .who span { display: flex; align-items: center; gap: 4pt; }
+  .sw { width: 16pt; height: 2.4pt; }
+  .sw.g { background: var(--court); }
+  .sw.c { background: var(--clay); }
+</style>
+</head>
+<body>
+
+<!-- ===================== PAGE 1 ===================== -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Weekly Workflow</div>
+    </div>
+    <div class="strip">
+      <div class="cell on">1</div><div class="cell">2</div>
+      <div class="cell dim">3</div><div class="cell dim">4</div>
+      <div class="cell dim">5</div><div class="cell dim">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">One session, start to finish</h1>
+  <p class="deck">The club plays weekly. Everything below happens between the group chat waking up
+    and the last set being logged. <strong>Only the clay-topped steps need a person</strong> — the
+    rest the app does on its own once it knows who turned up.</p>
+
+  <div class="lane">
+    <div class="lane-label">Before play</div>
+    <div class="lane-body">
+      <div class="step manual">
+        <div class="n">01</div>
+        <h4>Players reply in the group chat</h4>
+        <p>No new app and no new habit for anyone who just wants to turn up and play. The club's
+          existing chat carries on exactly as before.</p>
+      </div>
+      <div class="join clay">&rarr;</div>
+      <div class="step manual">
+        <div class="n">02</div>
+        <h4>Organizer marks who's in</h4>
+        <p>Tap names on the Today tab, or paste the chat thread into the box and let it match names
+          against the directory. Timestamps and banter are filtered out.</p>
+      </div>
+      <div class="join clay">&rarr;</div>
+      <div class="step manual">
+        <div class="n">03</div>
+        <h4>Set the date, time and length</h4>
+        <p>The forecast for that window appears inline — the day's high and low, and the UV across
+          the hours actually being played.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="lane">
+    <div class="lane-label">Setting up</div>
+    <div class="lane-body">
+      <div class="step manual">
+        <div class="n">04</div>
+        <h4>Choose a format per set</h4>
+        <p>Mixed, split by sex, or singles — one choice per set. Court count and numbering follow
+          from the headcount, starting at court 1.</p>
+      </div>
+      <div class="join clay">&rarr;</div>
+      <div class="step manual">
+        <div class="n">05</div>
+        <h4>Check the real court calendar</h4>
+        <p>A link out to the club's live schedule. The app cannot read it, so this is the one step
+          that stops a lesson and a session landing on the same court.</p>
+      </div>
+      <div class="join">&rarr;</div>
+      <div class="step">
+        <div class="n">06</div>
+        <h4>Pairings generate</h4>
+        <p>Skill balanced, repeat partners avoided, serving evened across teams, sit-outs shared.
+          Any set can still be adjusted by hand afterwards.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="lane">
+    <div class="lane-label">On court</div>
+    <div class="lane-body">
+      <div class="step manual">
+        <div class="n">07</div>
+        <h4>Sheet goes back to the chat</h4>
+        <p>One tap copies the whole schedule in readable form, ready to paste where everyone is
+          already looking.</p>
+      </div>
+      <div class="join clay">&rarr;</div>
+      <div class="step manual">
+        <div class="n">08</div>
+        <h4>Winners marked as sets finish</h4>
+        <p>Anyone can log a result — no PIN needed. A streak of three or more earns a flame, and a
+          win against a higher-rated pair is tagged as an upset.</p>
+      </div>
+      <div class="join">&rarr;</div>
+      <div class="step">
+        <div class="n">09</div>
+        <h4>History updates itself</h4>
+        <p>Every logged result is kept against the session date. Win/loss records are readable by
+          anyone; only an Admin can change them.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="lane">
+    <div class="lane-label">Afterwards</div>
+    <div class="lane-body">
+      <div class="step">
+        <div class="n">10</div>
+        <h4>The sheet ages out</h4>
+        <p>Each browser keeps its own sheet. One that has sat untouched for eight days, with its
+          date already past, is cleared automatically.</p>
+      </div>
+      <div class="join">&rarr;</div>
+      <div class="step">
+        <div class="n">11</div>
+        <h4>Usage is recorded</h4>
+        <p>Counts and durations only, visible to the Superuser tier, including how many sheets went
+          out without needing a hand adjustment.</p>
+      </div>
+      <div class="join">&rarr;</div>
+      <div class="step manual">
+        <div class="n">12</div>
+        <h4>Next week starts clean</h4>
+        <p>Start New Week clears who's playing and this week's pairings. The directory and the full
+          match history are untouched.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="who">
+    <span><i class="sw c"></i> Needs a person</span>
+    <span><i class="sw g"></i> The app does it</span>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; Coastside Tennis Association</span>
+    <span>Weekly workflow</span>
+    <span>Page 1 of 2</span>
+  </div>
+</div>
+
+<!-- ===================== PAGE 2 ===================== -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Weekly Workflow</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell on">2</div>
+      <div class="cell dim">3</div><div class="cell dim">4</div>
+      <div class="cell dim">5</div><div class="cell dim">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">What changes week to week, and what doesn't</h1>
+  <p class="deck">The most common confusion is which list resets. <strong>The week resets. The club
+    does not.</strong></p>
+
+  <div class="cols">
+    <div class="col">
+      <h2 class="section">Resets every week</h2>
+      <div class="card accent">
+        <h3>Who's playing</h3>
+        <p>Cleared by Start New Week, or when a sheet ages out after eight idle days.</p>
+      </div>
+      <div class="card accent">
+        <h3>This week's pairings</h3>
+        <p>Regenerated from scratch each time. Re-rolling is free — nothing is lost by trying again.</p>
+      </div>
+      <div class="card accent">
+        <h3>Session date, time and length</h3>
+        <p>Set fresh each week. The forecast and the date results are filed under both follow from it.</p>
+      </div>
+      <div class="card accent">
+        <h3>Set formats</h3>
+        <p>Saved with the week, so last week's choice doesn't silently carry over.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Persists indefinitely</h2>
+      <div class="card edge-clay">
+        <h3>The player directory</h3>
+        <p>Names, ratings, handedness, notes and court preferences. Hand-entered and effectively
+          irreplaceable — which is why an import shows every change before applying it and takes a
+          restorable snapshot first.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>Match history</h3>
+        <p>Every logged result, kept against its date. Never touched by anything that clears a week,
+          and never removed by sheet retention.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>Access control</h3>
+        <p>The Superuser PIN and every Admin PIN, stored only as salted hashes, in a separate record
+          from the directory.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>What it deliberately never holds</h3>
+        <p>No phone numbers, emails or addresses — only what the pairing needs. The app is also kept
+          out of search engines.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">How it decides, in plain terms</h2>
+      <p style="margin:0 0 5pt 0; font-size:8.3pt;">It tries 250 different arrangements of the same
+        people, scores each one, and keeps the best. Points are lost for:</p>
+      <ul class="tight" style="font-size:8.3pt;">
+        <li>One team being stronger than the other — by far the heaviest penalty</li>
+        <li>Pairing two people who have already partnered today</li>
+        <li>Mixing the fiercely competitive with the purely social on one court</li>
+        <li>One team clearly out-serving the other, or both weak servers on one side</li>
+        <li>Benching someone who has already sat out more than their share</li>
+      </ul>
+      <p style="margin:5pt 0 0 0; font-size:8.3pt;">Strength means the club's CTA rating. A USTA
+        rating is used only for players who have no CTA rating. Winning and losing never changes
+        either — ratings are set by hand.</p>
+
+      <div class="note" style="margin-top:9pt">
+        <strong>Two sheets at once.</strong> Each browser keeps its own weekly sheet, so two
+        organizers can plan the same session without overwriting each other. Taking a copy of
+        someone else's pulls their latest version, hand adjustments included.
+      </div>
+
+      <div class="note warn" style="margin-top:8pt">
+        <strong>Court numbers are not verified.</strong> The app assigns them from the headcount
+        alone and cannot see the club calendar, so step 05 is the only thing standing between a
+        printed court number and a lesson already booked on it.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; Coastside Tennis Association</span>
+    <span>What resets, what persists</span>
+    <span>Page 2 of 2</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="base.css">
+<style>
+  body { font-size: 10pt; }
+  .page.portrait h1.headline { font-size: 22pt; }
+  .page.portrait p.deck { font-size: 10.5pt; max-width: 100%; }
+  .task {
+    background: var(--surface); border: 0.7pt solid var(--line);
+    border-left: 2.4pt solid var(--court);
+    padding: 10pt 12pt; margin-bottom: 9pt;
+  }
+  .task h3 {
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+    font-size: 12pt; margin: 0 0 5pt 0;
+  }
+  .task ol { margin: 0; padding-left: 15pt; font-size: 9.6pt; }
+  .task ol li { margin-bottom: 3.5pt; }
+  .task ol li::marker { color: var(--court); font-weight: 700; }
+  .task p { margin: 5pt 0 0 0; font-size: 9.4pt; color: var(--muted); }
+  .qa { margin-bottom: 9pt; }
+  .qa .q {
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+    font-size: 10.5pt; margin-bottom: 2pt;
+  }
+  .qa .a { font-size: 9.6pt; line-height: 1.5; }
+  .big {
+    background: var(--court-tint); border-left: 2.4pt solid var(--court);
+    padding: 10pt 12pt; font-size: 10pt; line-height: 1.5;
+  }
+  .big.clay { background: var(--clay-tint); border-left-color: var(--clay); }
+</style>
+</head>
+<body>
+
+<!-- ===================== PAGE 1 ===================== -->
+<div class="page portrait">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">User Guide</div>
+    </div>
+    <div class="strip">
+      <div class="cell on">1</div><div class="cell">2</div>
+      <div class="cell dim">3</div><div class="cell dim">4</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Running a session</h1>
+  <p class="deck">Open <span class="mono">court-call.web.app</span> in any browser. Nothing to
+    install and no password for the everyday things — marking who's playing, making the pairings and
+    logging winners all work straight away. The app nudges you toward the next step as you go.</p>
+
+  <div class="task">
+    <h3>Mark who's playing</h3>
+    <ol>
+      <li>Open the app. You start on the <strong>Today</strong> tab.</li>
+      <li>Set the date, the start time and how long you're playing.</li>
+      <li>Tap a name to mark someone in. Tap again to take them out.</li>
+      <li>Can't find someone? Use the search box, or <strong>Add someone new</strong> at the bottom.</li>
+    </ol>
+    <p>The number at the top right counts everyone marked in. That number decides how many courts
+      you'll use. Tap the ⓘ beside any name to see their ratings and record.</p>
+  </div>
+
+  <div class="task">
+    <h3>Make the pairings</h3>
+    <ol>
+      <li>Tap <strong>Courts</strong> at the top.</li>
+      <li>Choose what each set should be: <strong>Mixed</strong>, <strong>Split by sex</strong>, or
+        <strong>Singles</strong>. It starts on mixed, split, mixed.</li>
+      <li>Use the − and + buttons to change how many sets you're playing.</li>
+      <li>Tap <strong>Generate Pairings</strong>.</li>
+    </ol>
+    <p>The line under each set tells you what it will produce before you commit, based on who's
+      marked in.</p>
+  </div>
+
+  <div class="task">
+    <h3>Share it and record the results</h3>
+    <ol>
+      <li>On <strong>Results</strong>, tap <strong>Copy for GroupMe</strong> and paste it into the
+        club chat.</li>
+      <li>As each set finishes, tap the winning pair's name.</li>
+      <li>Not happy with a set? Tap <strong>Adjust</strong>, then tap two players to swap them.</li>
+      <li>Want a completely different draw? Tap <strong>Re-roll pairings</strong>.</li>
+    </ol>
+    <p>Winners can be changed later if you tap the wrong one — just tap the correct pair instead.
+      Logging winners is what builds everyone's record, so it's worth the habit.</p>
+  </div>
+
+  <div class="big clay">
+    <strong>Always check the real court calendar before you play.</strong> Court Call picks court
+    numbers on its own and has no way of knowing about lessons or USTA matches. There's a link to
+    the club's calendar at the top of the Courts tab. That check is on you, not the app.
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Running a session</span>
+    <span>Page 1 of 2</span>
+  </div>
+</div>
+
+<!-- ===================== PAGE 2 ===================== -->
+<div class="page portrait">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">User Guide</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell on">2</div>
+      <div class="cell dim">3</div><div class="cell dim">4</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Questions that come up</h1>
+
+  <div class="cols">
+    <div class="col">
+      <div class="qa">
+        <div class="q">What does "split by sex" actually do?</div>
+        <div class="a">That set puts the women on one court together and the men on another, wherever
+          there are four of each. Anyone left over plays mixed as usual. If there aren't four of a
+          sex, that side isn't split and the set runs normally.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">What's the 🔥 next to a name?</div>
+        <div class="a">Three or more wins in a row. The number after it is how many. There's a key at
+          the bottom of the pairings sheet, so it shows up in screenshots too.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">Someone's rating is wrong.</div>
+        <div class="a">Tap <strong>Directory</strong> at the top right, enter your PIN, then the
+          pencil icon next to their name. The <strong>CTA rating</strong> is the one pairing uses,
+          and it takes any value — 3.7 is fine. USTA is only used for players without a CTA rating.
+          Winning and losing never changes either.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">How do I know what a 3 or a 4 means?</div>
+        <div class="a">There's a <strong>What do these ratings mean?</strong> link right under the
+          competitive and serving dropdowns. It explains all five levels of each.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">Why a different number of courts than I expected?</div>
+        <div class="a">Court count follows the headcount. Every four players make a doubles court,
+          and a spare pair gets a singles court. Twenty-four is the most it can pair at once.</div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="qa">
+        <div class="q">I made the pairings on my phone but I'm on my laptop now.</div>
+        <div class="a">Each browser keeps its own sheet. On the <strong>Today</strong> tab, look for
+          "other sessions in progress" and tap <strong>Take a copy</strong>. It brings across the
+          latest version, hand adjustments included, and doesn't change the original.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">Someone always plays on the same court.</div>
+        <div class="a">That's a court preference set in their directory entry, honoured every set.
+          You can change or remove it by editing that player.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">Starting a new week — will I lose anything?</div>
+        <div class="a"><strong>Start New Week</strong> clears who's playing and this week's
+          pairings. The player list and every past result stay exactly where they are.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">The app won't load, or won't take my PIN.</div>
+        <div class="a">Almost always a browser blocking it. In Brave, tap the lion in the address bar
+          and turn Shields off for this site, then refresh. Nothing is lost when this happens — the
+          app just can't reach its data.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">Can I see who won what?</div>
+        <div class="a">The <strong>History</strong> tab shows every player's win/loss record and
+          every logged match. Anyone can read it. Changing or deleting a result needs a PIN.</div>
+      </div>
+
+      <div class="qa">
+        <div class="q">Something's wrong and I don't know who to tell.</div>
+        <div class="a">Scroll to the bottom and tap <strong>Feedback or questions?</strong>. It goes
+          straight to the organizer's inbox.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="big" style="margin-top:4pt">
+    <strong>Tip — put it on your home screen.</strong> When your browser offers to add Court Call to
+    your home screen, say yes. It then opens like an app, without the address bar, and works exactly
+    the same.
+  </div>
+
+  <div class="big clay" style="margin-top:9pt">
+    <strong>If you have a PIN, two things to know.</strong> Importing a spreadsheet can change many
+    players at once — the app shows you every change first, so read that screen before confirming.
+    And it saves a snapshot beforehand, so a bad import can be undone.
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Questions</span>
+    <span>Page 2 of 2</span>
+  </div>
+</div>
+
+</body>
+</html>

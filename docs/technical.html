@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="base.css">
+<style>
+  .stack { display: flex; flex-direction: column; gap: 7pt; }
+  .box { background: var(--surface); border: 0.7pt solid var(--line); padding: 7pt 10pt; }
+  .box.dark { background: var(--court); border-color: var(--court); }
+  .box.dark h4 { color: #fff; }
+  .box.dark p { color: #DCE8DF; }
+  .box.tint { background: var(--court-tint); border-color: var(--court); }
+  .box h4 {
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+    font-size: 9.4pt; margin: 0 0 2.5pt 0;
+  }
+  .box p { margin: 0; font-size: 7.9pt; line-height: 1.4; color: #3B423C; }
+  .arrowrow {
+    display: flex; align-items: center; justify-content: center; gap: 7pt;
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-size: 7.4pt;
+    color: var(--muted); letter-spacing: 0.06em;
+  }
+  .arrowrow .a { color: var(--court); font-size: 12pt; line-height: 1; }
+  .kv { display: flex; gap: 8pt; font-size: 8.2pt; margin-bottom: 3pt; }
+  .kv .kk { flex: 0 0 88pt; color: var(--muted); }
+  .pill {
+    display: inline-block; font-family: "TeX Gyre Heros Cn", sans-serif;
+    font-size: 6.6pt; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 1.5pt 5pt; background: var(--clay-tint); color: var(--clay);
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 1 · ARCHITECTURE ============ -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Technical Reference</div>
+    </div>
+    <div class="strip">
+      <div class="cell on">1</div><div class="cell">2</div><div class="cell">3</div>
+      <div class="cell">4</div><div class="cell">5</div><div class="cell">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Architecture</h1>
+  <p class="deck">A React PWA on Firebase Hosting with <strong>no backend of its own.</strong> The
+    browser is the entire application; it talks to Firestore directly, and every constraint in this
+    document follows from that one fact.</p>
+
+  <div class="cols">
+    <div class="col" style="flex:1.05">
+      <h2 class="section">Request path</h2>
+      <div class="stack">
+        <div class="box">
+          <h4>Browser &#183; React 19 + Vite, installable PWA</h4>
+          <p>One component file, tab navigation via local state, no router. Service worker cached,
+            auto-update on deploy.</p>
+        </div>
+        <div class="arrowrow"><span class="a">&darr;</span> four methods only: get / set / delete / list</div>
+        <div class="box tint">
+          <h4>Storage interface &#183; <span class="mono">window.storage</span></h4>
+          <p>The app never imports Firebase. One file maps this interface onto Firestore, which is
+            what makes every screen testable against a stand-in store with no live project.</p>
+        </div>
+        <div class="arrowrow"><span class="a">&darr;</span> attested on every request</div>
+        <div class="box" style="border-left: 2.4pt solid var(--court-deep);">
+          <h4>App Check &#183; reCAPTCHA Enterprise, enforced</h4>
+          <p>Firestore rejects any request without a valid token. This is what makes a public config
+            object safe to ship in the bundle.</p>
+        </div>
+        <div class="arrowrow"><span class="a">&darr;</span></div>
+        <div class="box dark">
+          <h4>Firestore &#183; one collection, one document per key</h4>
+          <p>Each document holds a JSON string in a <span class="mono">value</span> field.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Everything else the client touches</h2>
+      <div class="card accent">
+        <h3>Open-Meteo &#183; forecast</h3>
+        <p>Daily high and low for the session date, plus the hourly UV series averaged across the
+          playing window. No key required.</p>
+      </div>
+      <div class="card accent">
+        <h3>Google Analytics &#183; behaviour</h3>
+        <p>Screen views per tab and named events per action. Write-only from the browser; reading it
+          back needs a service-account credential, which cannot live in a public bundle.</p>
+      </div>
+      <div class="card accent">
+        <h3>Formspree &#183; feedback</h3>
+        <p>In-app form to the organizer's inbox. One direction.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>Google Calendar &#183; link only</h3>
+        <p>The club schedule cannot be fetched from a browser, so the app links out to it rather
+          than pretending to know what is booked.</p>
+      </div>
+      <div class="note" style="margin-top:2pt">
+        <strong>Kept out of search engines.</strong> A <span class="mono">noindex</span> directive
+        and a site-wide <span class="mono">robots.txt</span>. Names and playing times are for the
+        club, not for a crawler.
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Delivery</h2>
+      <div class="kv"><span class="kk">Source control</span><span>GitHub Desktop, push to <span class="mono">main</span></span></div>
+      <div class="kv"><span class="kk">CI</span><span><span class="mono">npm ci &amp;&amp; npm run build</span></span></div>
+      <div class="kv"><span class="kk">Deploy</span><span>Firebase Hosting, static</span></div>
+      <div class="kv"><span class="kk">Round trip</span><span>about 45 seconds, no CLI</span></div>
+      <div class="kv"><span class="kk">Version</span><span>stamped from <span class="mono">package.json</span>, shown in the footer</span></div>
+
+      <h2 class="section" style="margin-top:12pt">Why no backend</h2>
+      <p style="margin:0 0 6pt 0; font-size:8.3pt;">This is a volunteer-run club of a few dozen
+        people. A server would mean hosting to maintain, secrets to rotate, and something that can
+        page someone at the weekend.</p>
+      <p style="margin:0; font-size:8.3pt;">The cost is paid in four specific places, each documented
+        where it bites: no scheduled jobs, no server-side reads, no credentials, and no cross-client
+        transactions. Nothing here works around those — it accommodates them.</p>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Architecture</span>
+    <span>Page 1 of 6</span>
+  </div>
+</div>
+
+<!-- ============ 2 · PAIRING ENGINE ============ -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Technical Reference</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell on">2</div><div class="cell">3</div>
+      <div class="cell">4</div><div class="cell">5</div><div class="cell">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">The pairing engine</h1>
+  <p class="deck">All pure functions, no side effects, no I/O. <strong>The engine can be exercised
+    with no browser and no database</strong> — which is how every change to it is verified before it
+    ever renders.</p>
+
+  <div class="cols">
+    <div class="col" style="flex:1.05">
+      <h2 class="section">How a set is built</h2>
+      <p style="margin:0 0 6pt 0; font-size:8.3pt;">No solver, no global optimum. Each set runs
+        <strong>250 shuffled attempts</strong>, scores each, and keeps the cheapest. Every criterion
+        is converted into one comparable number — cost — so they can be weighed against each other
+        at once.</p>
+
+      <table class="grid compact">
+        <tr><th>&times;</th><th>Penalty</th></tr>
+        <tr><td class="num">10</td><td>Skill imbalance between the two teams</td></tr>
+        <tr><td class="num">3</td><td>Partners who have already played together</td></tr>
+        <tr><td class="num">2</td><td>Spread of competitive ratings on one court</td></tr>
+        <tr><td class="num">2</td><td>Serving imbalance between the two teams</td></tr>
+        <tr><td class="num">2</td><td>Both weak servers on the same team</td></tr>
+        <tr><td class="num">1</td><td>Opponents already faced this session</td></tr>
+      </table>
+
+      <p style="margin:6pt 0 0 0; font-size:8.3pt;">A 0.5 rating gap costs 5, so skill dominates and
+        everything else breaks ties beneath it. Sit-outs carry their own penalty: anyone benched
+        below the session average costs the round proportionally, and counts carry between sets.</p>
+
+      <div class="note" style="margin-top:8pt">
+        <strong>Partner variety is session-scoped.</strong> Repeat avoidance works across the sets of
+        one session and starts fresh on the next. Carrying it across weeks is possible now that match
+        history is real, and is not yet built.
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">What feeds it</h2>
+      <table class="grid compact">
+        <tr><th>Field</th><th>Used for</th></tr>
+        <tr><td class="lead">CTA rating</td><td>Skill. The club's own scale, applied to everyone</td></tr>
+        <tr><td class="lead">USTA rating</td><td>Skill, but only for players with no CTA rating</td></tr>
+        <tr><td class="lead">Competitive 1&ndash;5</td><td>Grouping temperaments on a court</td></tr>
+        <tr><td class="lead">Serving 1&ndash;5</td><td>Team composition, not individual skill</td></tr>
+        <tr><td class="lead">Sex</td><td>Mixed and split-by-sex formats</td></tr>
+        <tr><td class="lead">Preferred court</td><td>Honoured every set</td></tr>
+      </table>
+      <p style="margin:6pt 0 0 0; font-size:8.3pt;">Nothing else reaches the engine. Handedness, age
+        and the free-text note are stored but never read by it, and match results never move a
+        rating.</p>
+
+      <div class="note" style="margin-top:8pt">
+        <strong>CTA leads, USTA falls back.</strong> The club rates everyone; USTA covers only those
+        who play league tennis. Rating half the club on an external scale and half on an internal one
+        would mean the two halves were never calibrated against each other.
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Two decisions worth knowing</h2>
+      <div class="card accent">
+        <h3>Serving is a team term</h3>
+        <p>A strong serve is already part of why someone is rated where they are, so adding it to
+          their rating would count it twice. What a rating cannot express is a property of the
+          <em>pair</em>: two weak servers together struggle to hold serve however well they rally.
+          Unrated players are skipped, never defaulted.</p>
+      </div>
+      <div class="card accent">
+        <h3>Ratings never move on results</h3>
+        <p>At a recreational club a rating is a social fact as much as a measured one. The streak
+          flame and the upset tag are display only; neither reads back into pairing.</p>
+      </div>
+
+      <h2 class="section" style="margin-top:11pt">Formats belong to the set</h2>
+      <p style="margin:0 0 6pt 0; font-size:8.3pt;"><strong>Mixed</strong> &mdash; mixed doubles, plus
+        a singles court when exactly two would otherwise have nothing to fill.
+        <strong>Split by sex</strong> &mdash; women's and men's doubles wherever four of a sex are
+        playing, women on the higher courts. <strong>Singles</strong> &mdash; the whole set, two per
+        court.</p>
+      <div class="note clay">
+        <strong>Single-sex courts must fill first.</strong> Courts are filled in list order, so one
+        placed last would find the mixed courts had already taken the women, and would silently
+        degrade to ordinary doubles.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Pairing engine</span>
+    <span>Page 2 of 6</span>
+  </div>
+</div>
+
+<!-- ============ 3 · DATA ============ -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Technical Reference</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell">2</div><div class="cell on">3</div>
+      <div class="cell">4</div><div class="cell">5</div><div class="cell">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Data model &amp; concurrency</h1>
+  <p class="deck">One Firestore collection, <span class="mono">court-call-data</span>, one document
+    per key. <strong>Every write replaces a whole document</strong> — the single most important thing
+    to understand about this system's failure modes.</p>
+
+  <div class="cols">
+    <div class="col" style="flex:1.3">
+      <h2 class="section">Documents</h2>
+      <table class="grid compact">
+        <tr><th>Key</th><th>Holds</th><th>Scope</th></tr>
+        <tr><td class="mono k">player-directory</td><td>Every member: name, sex, ratings, handedness, competitive and serving ratings, comments, court preference, active flag</td><td>Shared</td></tr>
+        <tr><td class="mono k">player-directory-backup</td><td>Last 10 snapshots, each with timestamp, reason and who took it</td><td>Shared</td></tr>
+        <tr><td class="mono k">match-history</td><td>Every logged result, keyed by date, set, court and the players in it</td><td>Shared</td></tr>
+        <tr><td class="mono k">admin-registry</td><td>Superuser and Admin PINs, each a SHA-256 hash with its own salt</td><td>Shared</td></tr>
+        <tr><td class="mono k">audit-log</td><td>Admin and Superuser actions, newest first, capped at 500</td><td>Shared</td></tr>
+        <tr><td class="mono k">weekly-state-v2:&#8230;</td><td>One week's sheet: who's playing, session window, set formats, schedule</td><td><span class="pill">Per browser</span></td></tr>
+        <tr><td class="mono k">usage-telemetry:&#8230;</td><td>Visits, engagement, tab and action counts, device class</td><td><span class="pill">Per browser</span></td></tr>
+      </table>
+
+      <div class="note warn" style="margin-top:8pt">
+        <strong>Known limitation, accepted.</strong> The directory is one document, so two Admins
+        editing different players simultaneously overwrite each other — last write wins, silently.
+        Snapshots make it recoverable; the real fix is one document per player, which is a migration
+        rather than a patch.
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Why sheets are per browser</h2>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">A single shared weekly document means two
+        organizers with the app open silently erase each other's work, because every save rewrites
+        the whole thing from that device's memory.</p>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">Each browser mints a random id into
+        <span class="mono">localStorage</span> and namespaces its own weekly and telemetry documents.
+        Collisions become impossible rather than unlikely, with no locking or merge logic to get
+        wrong.</p>
+      <div class="note clay">
+        <strong>This is per browser profile, not per device.</strong> Two browsers on one laptop are
+        two sheets; an incognito window is a third; clearing site data starts fresh and orphans the
+        old one. The session list is the escape hatch — taking a copy pulls another sheet's
+        <em>current</em> state, re-read at that moment rather than from the cached listing.
+      </div>
+      <p style="margin:7pt 0 0 0; font-size:8.4pt;">Without <span class="mono">localStorage</span> the
+        app falls back to a single shared document rather than breaking.</p>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Retention</h2>
+      <p style="margin:0 0 6pt 0; font-size:8.4pt;">A weekly sheet is deleted when it has been
+        <strong>idle 8 days AND its date has passed</strong>. Both conditions, always. Anything dated
+        today or later survives at any age, so a week-ahead plan is safe.</p>
+      <ul class="tight" style="font-size:8.3pt;">
+        <li>Capped at 3 deletions per app load — a trickle, not a sweep</li>
+        <li>Empty sheets are hidden from the list immediately, but still age out normally</li>
+        <li>Only weekly sheets are ever deleted. Directory, history, registry and telemetry never are</li>
+      </ul>
+      <div class="note warn" style="margin-top:8pt">
+        <strong>Cleanup requires a visitor.</strong> With no server there are no scheduled jobs, so
+        deletion happens when someone opens the app — one browser tidying up after browsers that
+        never came back. If the club goes quiet for a month, nothing is deleted during it. Firestore
+        TTL would fix this without a backend, but cannot express a two-condition rule.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Data &amp; concurrency</span>
+    <span>Page 3 of 6</span>
+  </div>
+</div>
+
+<!-- ============ 4 · ACCESS ============ -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Technical Reference</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell">2</div><div class="cell">3</div>
+      <div class="cell on">4</div><div class="cell">5</div><div class="cell">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Access control</h1>
+  <p class="deck">Three tiers, no user accounts, no login list to maintain — <strong>a deliberate
+    trade of individual accountability for zero administration</strong> at a volunteer club. The
+    other half of the design is holding as little as possible in the first place.</p>
+
+  <div class="cols">
+    <div class="col">
+      <h2 class="section">Tiers</h2>
+      <table class="grid compact">
+        <tr><th>Tier</th><th>Opens</th><th>Unlocked by</th></tr>
+        <tr><td class="lead">Open</td><td>Marking who's playing, generating and adjusting pairings, logging winners, reading history</td><td>Nothing</td></tr>
+        <tr><td class="lead">Admin</td><td>The directory, plus editing and deleting history</td><td>A named PIN, issued individually</td></tr>
+        <tr><td class="lead">Superuser</td><td>Everything above, plus granting and revoking Admin, snapshots and restore, full data export, the activity log and usage</td><td>One PIN, behind five taps on the logo</td></tr>
+      </table>
+      <p style="margin:7pt 0 0 0; font-size:8.3pt;">History is readable by anyone on purpose —
+        win/loss records are casual, fun information, unlike the notes kept in the directory.</p>
+      <div class="note" style="margin-top:8pt">
+        <strong>Idle locks.</strong> Admin and history editing lock after 10 minutes idle, Superuser
+        after 5. Timers reset on any interaction, so active work is never interrupted, and a warning
+        appears 60 seconds before with a "still here" button. Locking clears the acting admin's name
+        so the next person's actions can't be misattributed.
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">PIN storage</h2>
+      <div class="card accent">
+        <h3>Hashed, not encrypted — deliberately</h3>
+        <p>SHA-256 with a unique 16-byte salt per PIN. Encryption would be the wrong tool, not a
+          stronger one: with no server, any key would ship inside the public bundle beside the data
+          it protects. A hash never needs reversing.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>The limit that remains</h3>
+        <p>A short PIN has a small keyspace. Hashing keeps plain PINs out of the database; it does
+          not make a short one hard to crack if a hash is ever obtained. The fix is longer PINs, not
+          different hashing.</p>
+      </div>
+      <div class="card accent">
+        <h3>Registry isolation</h3>
+        <p>Who holds Admin lives in its own document. Admins can already edit the directory, so a
+          flag stored there would sit inside the thing it controls, allowing self-escalation.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Storage failures cannot downgrade access</h2>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">The storage layer tags every read error as
+        <span class="mono">not-found</span> or <span class="mono">unavailable</span>. First-time
+        setup runs only on a confirmed <span class="mono">not-found</span>.</p>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">Every PIN check refuses <em>any</em> PIN —
+        including a correct one — when the registry cannot be confirmed either way, and says so.
+        Without that distinction, a browser unable to reach Firestore looks identical to a fresh
+        install, and the app would rebuild default access in memory.</p>
+      <div class="note warn">
+        <strong>A privacy shield blocking the attestation script makes the app unusable, not
+        insecure.</strong> The message names the browser and the setting when it can detect it.
+      </div>
+
+      <h2 class="section" style="margin-top:11pt">Held deliberately narrow</h2>
+      <p style="margin:0 0 5pt 0; font-size:8.3pt;">The directory records <strong>no contact details
+        of any kind</strong> — no phone number, no email, no address.</p>
+      <p style="margin:0; font-size:8.3pt;">Without a PIN the app shows a name and nothing else.
+        Ratings sit behind a tap on the info control; competitive, serving and the notes are behind
+        the PIN.</p>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Access control</span>
+    <span>Page 4 of 6</span>
+  </div>
+</div>
+
+<!-- ============ 5 · DATA INTEGRITY ============ -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Technical Reference</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell">2</div><div class="cell">3</div>
+      <div class="cell">4</div><div class="cell on">5</div><div class="cell">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Protecting the irreplaceable data</h1>
+  <p class="deck">Pairings regenerate in seconds. <strong>The directory and the match history cannot
+    be reconstructed at all.</strong> Everything on this page exists because of that asymmetry.</p>
+
+  <div class="cols">
+    <div class="col">
+      <h2 class="section">Import merges, never replaces</h2>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">Rows are matched by name, and
+        <strong>only fields the spreadsheet actually supplies are written</strong>. A blank cell means
+        "nothing to say", never "erase this". A missing column changes nothing.</p>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">The alternative — replacing the record with the
+        incoming row — resets every hand-entered value the sheet does not carry. A club roster has
+        names and ratings, so competitive ratings, notes and court preferences would be one import
+        away from silent erasure.</p>
+      <p style="margin:0; font-size:8.4pt;">The internal id and the active flag never come from a
+        file: the id must stay stable or match history loses its link to the player, and the sheet's
+        availability column is a stale snapshot.</p>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Three layers, deliberately</h2>
+      <div class="card accent">
+        <h3>1 &#183; Review before writing</h3>
+        <p>Choosing a file changes nothing. Every field that would change is listed per player —
+          <span class="mono">CTA 4.5 &rarr; 3.0</span> — with a tick box to exclude anyone whose app
+          values are newer than the sheet. Cancel writes nothing at all.</p>
+      </div>
+      <div class="card accent">
+        <h3>2 &#183; Snapshot on confirm</h3>
+        <p>Written and verified before the directory changes; if it cannot be saved, the import does
+          not run. Last 10 kept, restorable from the Superuser console. Restoring is itself
+          snapshotted, so it is reversible in both directions.</p>
+      </div>
+      <div class="card accent">
+        <h3>3 &#183; Off-database export</h3>
+        <p>Importing prompts to download a spreadsheet copy first. The Superuser console offers a
+          full JSON export of every document.</p>
+      </div>
+      <div class="note clay" style="margin-top:8pt">
+        <strong>Snapshots share the database they protect.</strong> They defend against mistakes, not
+        against losing the project. The downloaded export is the only copy that survives that.
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Testing approach</h2>
+      <p style="margin:0 0 7pt 0; font-size:8.4pt;">The app is driven headlessly in jsdom against a
+        mock <span class="mono">window.storage</span> that reproduces the real error tagging. Tests
+        click real buttons and assert on what reaches storage, rather than calling internals.</p>
+      <ul class="tight" style="font-size:8.3pt;">
+        <li>Import merge, per field, from real generated <span class="mono">.xlsx</span> workbooks</li>
+        <li>Blocked-storage behaviour, including default-PIN refusal</li>
+        <li>Idle locks, driven by advancing the clock rather than waiting</li>
+        <li>Session scoping, 8-day retention boundaries, and copy freshness</li>
+        <li>Set formats, single-sex fill order, and rating precedence</li>
+      </ul>
+      <div class="note" style="margin-top:8pt">
+        <strong>Worth the note:</strong> this suite has repeatedly caught things a linter could not —
+        a runtime crash from a helper removed alongside dead code, a snapshot written before the user
+        had confirmed anything, and a copy that silently used stale data.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Data integrity</span>
+    <span>Page 5 of 6</span>
+  </div>
+</div>
+
+<!-- ============ 6 · OPERATING ============ -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Technical Reference</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell">2</div><div class="cell">3</div>
+      <div class="cell">4</div><div class="cell">5</div><div class="cell on">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Operating notes &amp; open items</h1>
+  <p class="deck">What to check, what is known-limited, and what a future change should not undo
+    without re-reading the reason.</p>
+
+  <div class="cols">
+    <div class="col">
+      <h2 class="section">Constants worth knowing</h2>
+      <table class="grid compact">
+        <tr><th>Setting</th><th>Value</th></tr>
+        <tr><td>Admin idle lock</td><td class="num">10 min</td></tr>
+        <tr><td>History-edit idle lock</td><td class="num">10 min</td></tr>
+        <tr><td>Superuser idle lock</td><td class="num">5 min</td></tr>
+        <tr><td>Lock warning</td><td class="num">60 s before</td></tr>
+        <tr><td>Sheet retention</td><td class="num">8 days idle + date past</td></tr>
+        <tr><td>Deletions per load</td><td class="num">3</td></tr>
+        <tr><td>Snapshots kept</td><td class="num">10</td></tr>
+        <tr><td>Audit log cap</td><td class="num">500</td></tr>
+        <tr><td>Telemetry flush</td><td class="num">60 s + on hide</td></tr>
+        <tr><td>Engagement idle cutoff</td><td class="num">2 min</td></tr>
+        <tr><td>Attempts per set</td><td class="num">250</td></tr>
+        <tr><td>Weak serve threshold</td><td class="num">1&ndash;2 of 5</td></tr>
+        <tr><td>Streak badge threshold</td><td class="num">3 wins</td></tr>
+        <tr><td>Max players</td><td class="num">24</td></tr>
+      </table>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Known and accepted</h2>
+      <div class="card edge-warn">
+        <h3>Court numbers are unverified</h3>
+        <p>Assigned from headcount alone. The club calendar cannot be read from a browser, so a
+          printed court number carries no guarantee it is free.</p>
+      </div>
+      <div class="card edge-warn">
+        <h3>Directory writes are whole-document</h3>
+        <p>Simultaneous Admin edits overwrite each other silently. Snapshots make it recoverable.</p>
+      </div>
+      <div class="card edge-warn">
+        <h3>Badges depend on complete logging</h3>
+        <p>Streaks are computed from logged results, so an unlogged loss does not break a streak —
+          the flame can overstate, not just lag. The same applies to any future badge derived from
+          results.</p>
+      </div>
+      <div class="card edge-warn">
+        <h3>Analytics under-counts</h3>
+        <p>Privacy-blocking browsers drop the script entirely. The in-app usage panel counts those
+          people; Google Analytics does not, so the in-app figures are the honest ones.</p>
+      </div>
+      <div class="card edge-warn">
+        <h3>Console settings live outside the repo</h3>
+        <p>App Check enforcement and the Firestore rules are set in the Firebase console. Nothing in
+          the codebase can confirm them.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">If picking this up</h2>
+      <div class="card accent">
+        <h3>Do not simplify import back to a replace</h3>
+        <p>Field-level merge prevents silent data loss, not defensive style.</p>
+      </div>
+      <div class="card accent">
+        <h3>Do not move the admin registry onto player records</h3>
+        <p>It permits self-escalation. The separation is the control.</p>
+      </div>
+      <div class="card accent">
+        <h3>Do not let single-sex courts fill last</h3>
+        <p>They silently degrade to ordinary doubles.</p>
+      </div>
+      <div class="card accent">
+        <h3>Do not treat a failed read as empty</h3>
+        <p>The distinction between <span class="mono">not-found</span> and
+          <span class="mono">unavailable</span> is load-bearing.</p>
+      </div>
+      <div class="card accent">
+        <h3>Watch the pairing quality panel</h3>
+        <p>It records how many sheets went out untouched. A falling figure is the first sign a
+          scoring weight is off.</p>
+      </div>
+
+      <h2 class="section" style="margin-top:9pt">Open, not started</h2>
+      <ul class="tight" style="font-size:8.1pt;">
+        <li>Per-player directory documents</li>
+        <li>Repeat-partner avoidance across weeks</li>
+        <li>A limitation flag for players returning from injury</li>
+        <li>A computed form signal from match history</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Operating notes</span>
+    <span>Page 6 of 6</span>
+  </div>
+</div>
+
+</body>
+</html>

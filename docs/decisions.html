@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="base.css">
+<style>
+  table.dec td { padding: 5.5pt 9pt 5.5pt 0; font-size: 8.1pt; vertical-align: top; line-height: 1.4; }
+  table.dec td.d {
+    font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+    font-size: 9.6pt; width: 22%; line-height: 1.12;
+  }
+  table.dec td.cost { color: var(--clay); width: 36%; }
+  table.dec th.costh { color: var(--clay); border-bottom-color: var(--clay); }
+</style>
+</head>
+<body>
+
+<!-- ===================== PAGE 1 ===================== -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Decision Record</div>
+    </div>
+    <div class="strip">
+      <div class="cell on">1</div><div class="cell">2</div><div class="cell">3</div>
+      <div class="cell dim">4</div><div class="cell dim">5</div><div class="cell dim">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Decisions, and what each one costs</h1>
+  <p class="deck">Every entry could have gone the other way. What makes them decisions rather than
+    defaults is that <strong>the cost is understood and accepted on purpose.</strong> The cost is
+    recorded alongside, because that is the part that evaporates first — and the part a future change
+    needs before it reopens anything here.</p>
+
+  <table class="grid dec">
+    <tr>
+      <th>Decision</th>
+      <th>Why</th>
+      <th class="costh">What it costs</th>
+    </tr>
+    <tr>
+      <td class="d">No backend at all</td>
+      <td>This is a volunteer-run club of a few dozen people, built and maintained by one person. A server means hosting to maintain, secrets to rotate, and something that can fail at the weekend. A static site has none of that.</td>
+      <td class="cost">No scheduled jobs, no server-side reads, no credentials, no cross-client transactions. Four limitations elsewhere in this system trace directly to this line.</td>
+    </tr>
+    <tr>
+      <td class="d">PIN tiers instead of user accounts</td>
+      <td>Tiered access is needed; maintaining a list of accounts is not acceptable. Three tiers opened by PIN — nothing to sign up for, nothing to reset, nobody to off-board.</td>
+      <td class="cost">Shared PINs mean shared responsibility. The audit log knows which PIN acted, not which person — attribution holds only while people use their own.</td>
+    </tr>
+    <tr>
+      <td class="d">Hash PINs, never encrypt them</td>
+      <td>With no server, any decryption key would ship inside the public JavaScript beside what it protects. Hashing never needs reversing, so there is nothing to leak.</td>
+      <td class="cost">A short PIN still has a small keyspace. Hashing keeps plain PINs out of the database; it does not make a short one resistant to a determined attempt on a stolen hash.</td>
+    </tr>
+    <tr>
+      <td class="d">Admin registry in its own document</td>
+      <td>Admins can already edit the directory. An "is Admin" flag stored there would sit inside the thing it controls, letting any Admin read or grant access, including their own.</td>
+      <td class="cost">One more document to reason about, and one more thing that must be present for access checks to work at all.</td>
+    </tr>
+    <tr>
+      <td class="d">Link out to the club calendar</td>
+      <td>A direct fetch of the calendar feed is blocked by the browser. Rather than fake it, the app links to the real schedule and says plainly that court numbers are unverified.</td>
+      <td class="cost">Court conflicts depend entirely on a human looking. The app will print "Court 3" while a lesson is booked on it.</td>
+    </tr>
+    <tr>
+      <td class="d">Store as little as the job needs</td>
+      <td>A club roster could reasonably hold phone numbers, emails and addresses. None were added — the directory carries only what the pairing engine uses, so there is no contact information to expose or protect. Names and playing times are also kept out of search engines.</td>
+      <td class="cost">Contact details have to live somewhere else, so the app can never become the single place member information is kept.</td>
+    </tr>
+    <tr>
+      <td class="d">Ratings stay manual</td>
+      <td>At a recreational club a rating is a social fact as much as a measured one. Letting last Sunday quietly move someone's number would cause more arguments than it settles.</td>
+      <td class="cost">A rating can sit stale while a player's form moves, and nothing notices. A computed form signal, kept separate from the organizer's number, remains the favoured direction.</td>
+    </tr>
+  </table>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Foundations</span>
+    <span>Page 1 of 3</span>
+  </div>
+</div>
+
+<!-- ===================== PAGE 2 ===================== -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Decision Record</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell on">2</div><div class="cell">3</div>
+      <div class="cell dim">4</div><div class="cell dim">5</div><div class="cell dim">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Decisions about the data and the people</h1>
+  <p class="deck">What the app rates players on, what it keeps about them, and what it shows to a
+    room. <strong>Each one is narrower than the obvious alternative</strong>, and narrower on
+    purpose.</p>
+
+  <table class="grid dec">
+    <tr>
+      <th>Decision</th>
+      <th>Why</th>
+      <th class="costh">What it costs</th>
+    </tr>
+    <tr>
+      <td class="d">CTA leads, USTA falls back</td>
+      <td>The club rates everyone; USTA covers only those who play league tennis. Rating half the club on an external scale and half on an internal one means the two halves were never calibrated against each other. The club's own judgment of how someone plays here is the more useful number.</td>
+      <td class="cost">A CTA rating that was set carelessly now drives pairing directly, so the directory needs a considered pass before the numbers can be trusted.</td>
+    </tr>
+    <tr>
+      <td class="d">Serving scored on the team, not the player</td>
+      <td>A strong serve is already part of why someone is rated where they are, so folding it into their rating would count it twice. What a rating cannot express is a property of the pair: two weak servers together struggle to hold serve however well they rally.</td>
+      <td class="cost">Another term competing with skill balance for influence. Kept deliberately light so it breaks ties rather than driving decisions.</td>
+    </tr>
+    <tr>
+      <td class="d">No age or health notes in the app</td>
+      <td>Publishing ages, and holding health-adjacent free text behind a single shared PIN, is more personal data than a pairing sheet needs. Both remain in storage and in the export, so nothing is destroyed.</td>
+      <td class="cost">The organizer loses a place to note a knock. Modelling that properly — a limitation flag the engine can act on — is a separate build and not yet done.</td>
+    </tr>
+    <tr>
+      <td class="d">Ratings behind a tap, not beside a name</td>
+      <td>A number printed next to someone's name on a screen anyone can open reads as a public ranking. One tap on the info control shows the same number to whoever actually wants it.</td>
+      <td class="cost">The organizer loses an at-a-glance scan of the whole list and has to tap per player. Ratings are still visible to anyone who looks — this reduces exposure, it does not make them private.</td>
+    </tr>
+    <tr>
+      <td class="d">Badges stay rare and positive</td>
+      <td>A streak flame at three wins is uncommon enough to mean something. Badges that fire most weeks become wallpaper, and anything marking a player out negatively has no place on a social club's sheet.</td>
+      <td class="cost">Every badge is derived from logged results, so incomplete logging distorts them — an unlogged loss does not break a streak. Further badges are held until the logging habit is reliable.</td>
+    </tr>
+  </table>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Data &amp; people</span>
+    <span>Page 2 of 3</span>
+  </div>
+</div>
+
+<!-- ===================== PAGE 3 ===================== -->
+<div class="page">
+  <div class="mast">
+    <div class="mast-left">
+      <div class="wordmark">Court <em>Call</em></div>
+      <div class="mast-title">Decision Record</div>
+    </div>
+    <div class="strip">
+      <div class="cell">1</div><div class="cell">2</div><div class="cell on">3</div>
+      <div class="cell dim">4</div><div class="cell dim">5</div><div class="cell dim">6</div>
+    </div>
+  </div>
+
+  <h1 class="headline">Guarding against silent failure</h1>
+  <p class="deck">The defining failure mode of a system with no server and no operator is
+    <strong>something succeeding incorrectly and reporting success.</strong> No error, no crash, no
+    log entry. Four designs exist specifically to prevent that.</p>
+
+  <div class="cols">
+    <div class="col">
+      <div class="card accent">
+        <h3>"Not found" is not "cannot reach"</h3>
+        <p>The storage layer tags every read failure distinctly. First-time setup runs only on a
+          confirmed missing document, and every PIN check refuses <em>any</em> PIN when the registry
+          cannot be confirmed either way.</p>
+        <p class="muted">Without it, a browser unable to reach the database looks identical to a
+          fresh install — and the app would rebuild default access in memory and accept a default
+          PIN.</p>
+      </div>
+      <div class="card accent">
+        <h3>Import merges field by field</h3>
+        <p>Only fields the spreadsheet actually supplies are written. A blank cell means "nothing to
+          say", never "erase this".</p>
+        <p class="muted">Replacing the whole record instead would silently reset every hand-entered
+          value a names-and-ratings roster does not carry.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card accent">
+        <h3>Per-browser weekly sheets</h3>
+        <p>Each browser namespaces its own sheet, so collisions become impossible rather than
+          unlikely — with no locking or merge logic to get wrong.</p>
+        <p class="muted">One shared document, rewritten in full on every save, means two organizers
+          with the app open erase each other's work without either of them seeing anything.</p>
+      </div>
+      <div class="card accent">
+        <h3>A copy reads the source fresh</h3>
+        <p>Taking a copy of another sheet re-reads it at that moment rather than using the cached
+          listing, and says so if it cannot.</p>
+        <p class="muted">Otherwise a sheet adjusted after the list was loaded is copied in its
+          pre-adjustment state: right players, wrong lineup, no sign anything is out of date.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <h2 class="section">Standing rules for future work</h2>
+      <div class="card edge-clay">
+        <h3>The directory and match history are irreplaceable</h3>
+        <p>Pairings regenerate in seconds; hand-entered player data and logged results cannot be
+          reconstructed at all. Any change touching either needs explicit preservation tests before
+          it ships, not after.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>Confirm before packaging a release</h3>
+        <p>Summarize what is in a build and get an explicit go-ahead before producing files,
+          especially for anything touching access or data.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>Prefer a preference to a rule</h3>
+        <p>Court preferences, split-by-sex and singles all degrade quietly when the headcount cannot
+          support them. A session that can be played beats a rule that cannot be honoured.</p>
+      </div>
+      <div class="card edge-clay">
+        <h3>Delete dead code rather than leaving it</h3>
+        <p>Code that cannot work misleads whoever reads the file next.</p>
+      </div>
+
+      <div class="note clay" style="margin-top:6pt">
+        <strong>Reopening any of this is fine.</strong> Reopen the reason as well as the outcome —
+        several entries look like unnecessary complexity until you know what they are load-bearing
+        for.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Court Call v0.70.0 &#183; court-call.web.app</span>
+    <span>Silent failure &#183; standing rules</span>
+    <span>Page 3 of 3</span>
+  </div>
+</div>
+
+</body>
+</html>

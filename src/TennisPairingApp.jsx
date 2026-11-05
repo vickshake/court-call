@@ -1863,6 +1863,19 @@ export default function TennisPairingApp() {
   // and getLoggedWinner is read during render, and both are declared above the point
   // where the sheet on screen is worked out.
   const loggingContextRef = useRef({ date: '', playerMap: {} });
+  // Every weekly save replaces the whole document, so what goes out has to be the real
+  // current sheet - not whatever a React closure captured when a handler was created.
+  // Two taps close together used to build their payloads from different renders, and
+  // whichever landed last won, silently discarding the other's change. That is how a
+  // freshly generated schedule could be overwritten by a later save still carrying the
+  // old one.
+  const weeklyRef = useRef(null);
+  // Writes are chained so two can never be in flight at once and land out of order.
+  const weeklyWriteRef = useRef(Promise.resolve());
+  // Whether the schedule on screen has actually reached the database. A generated sheet
+  // starts unsaved and only becomes saved when a write completes.
+  const scheduleSavedRef = useRef(true);
+  const [savingSheet, setSavingSheet] = useState(false);
   const [hintsDismissed, setHintsDismissed] = useState(() => readHintsDismissed());
   const [exportPrompt, setExportPrompt] = useState(false);
   const [isBrave, setIsBrave] = useState(false);
@@ -2120,6 +2133,18 @@ export default function TennisPairingApp() {
       if (Array.isArray(w.setFormats) && w.setFormats.length) setSetFormats(w.setFormats);
       else if (w.rounds) setSetFormats(defaultSetFormats(w.rounds));
       setSchedule(w.schedule || null);
+      weeklyRef.current = {
+        playingIds: w.playingIds || [],
+        sessionDate: loadedDate < todayISO() ? todayISO() : loadedDate,
+        sessionTime: w.sessionTime || '',
+        sessionDuration: w.sessionDuration || '',
+        rounds: w.rounds || rounds,
+        setFormats: (Array.isArray(w.setFormats) && w.setFormats.length)
+          ? w.setFormats
+          : (w.rounds ? defaultSetFormats(w.rounds) : setFormats),
+        schedule: w.schedule || null,
+        updatedAt: w.updatedAt || null,
+      };
     }
     // No explicit else here, deliberately: on an ambiguous failure this leaves the
     // in-memory state exactly as it already was, rather than resetting anything.
@@ -2289,16 +2314,25 @@ export default function TennisPairingApp() {
       capNotice = `Only the first ${MAX_PLAYING} stuck — that's the most this app can pair at once (6 courts × 4).`;
       incomingPlayingIds = incomingPlayingIds.slice(0, MAX_PLAYING);
     }
+
+    // Build on the ref, not on this render's values. The ref is updated synchronously
+    // below, so back-to-back calls each see the previous one's result even though no
+    // re-render has happened in between.
+    const base = weeklyRef.current || {
+      playingIds, sessionDate, sessionTime, sessionDuration, rounds, setFormats, schedule,
+    };
     const next = {
-      playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : playingIds,
-      sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : sessionDate,
-      sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : sessionTime,
-      sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : sessionDuration,
-      rounds: partial.rounds !== undefined ? partial.rounds : rounds,
-      setFormats: partial.setFormats !== undefined ? partial.setFormats : setFormats,
-      schedule: partial.schedule !== undefined ? partial.schedule : schedule,
+      playingIds: incomingPlayingIds !== undefined ? incomingPlayingIds : base.playingIds,
+      sessionDate: partial.sessionDate !== undefined ? partial.sessionDate : base.sessionDate,
+      sessionTime: partial.sessionTime !== undefined ? partial.sessionTime : base.sessionTime,
+      sessionDuration: partial.sessionDuration !== undefined ? partial.sessionDuration : base.sessionDuration,
+      rounds: partial.rounds !== undefined ? partial.rounds : base.rounds,
+      setFormats: partial.setFormats !== undefined ? partial.setFormats : base.setFormats,
+      schedule: partial.schedule !== undefined ? partial.schedule : base.schedule,
       updatedAt: Date.now(),
     };
+    weeklyRef.current = next;
+
     if (incomingPlayingIds !== undefined) setPlayingIds(incomingPlayingIds);
     if (partial.sessionDate !== undefined) setSessionDate(partial.sessionDate);
     if (partial.sessionTime !== undefined) setSessionTime(partial.sessionTime);
@@ -2306,13 +2340,43 @@ export default function TennisPairingApp() {
     if (partial.rounds !== undefined) setRounds(partial.rounds);
     if (partial.setFormats !== undefined) setSetFormats(partial.setFormats);
     if (partial.schedule !== undefined) setSchedule(partial.schedule);
-    try {
-      await window.storage.set(WEEKLY_KEY, JSON.stringify(next), true);
-      setSaveError(capNotice);
-    } catch (e) {
-      console.error('weekly save failed', e);
-      setSaveError("Your last change didn't save — check your connection and try that action again.");
-    }
+
+    // One write at a time, and each one sends the newest state rather than the snapshot
+    // taken when it was queued - so a burst of taps collapses into the right final sheet
+    // instead of racing.
+    // One write at a time, each sending the newest state rather than the snapshot taken
+    // when it was queued, and retried before giving up.
+    //
+    // A dropped save used to leave the app looking entirely normal: the screen showed the
+    // new sheet, it could be shared as an image, and nothing but a dismissible warning
+    // said the sheet had never reached the database - so nobody watching could see it and
+    // the organizer had no reason to suspect anything. A generated sheet is also verified
+    // by reading it back, because that is the one write worth being certain about.
+    weeklyWriteRef.current = weeklyWriteRef.current.then(async () => {
+      const wantsSchedule = partial.schedule !== undefined && partial.schedule !== null;
+      if (wantsSchedule) setSavingSheet(true);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await window.storage.set(WEEKLY_KEY, JSON.stringify(weeklyRef.current), true);
+          if (wantsSchedule) {
+            const back = await window.storage.get(WEEKLY_KEY, true);
+            const saved = back && back.value ? JSON.parse(back.value) : null;
+            if (!saved || !saved.schedule) throw new Error('schedule did not stick');
+          }
+          setSaveError(capNotice);
+          if (wantsSchedule) { scheduleSavedRef.current = true; setSavingSheet(false); }
+          return;
+        } catch (e) {
+          console.error(`weekly save attempt ${attempt + 1} failed`, e);
+          if (attempt < 2) await new Promise((r) => { setTimeout(r, 400 * (attempt + 1)); });
+        }
+      }
+      if (wantsSchedule) setSavingSheet(false);
+      setSaveError(wantsSchedule
+        ? "These pairings are NOT saved — nobody else can see them and they'll be gone if you close the app. Check your connection, then tap Re-roll pairings to try again."
+        : "Your last change didn't save — check your connection and try that action again.");
+    });
+    await weeklyWriteRef.current;
   }
 
   async function persistHistory(next) {
@@ -2881,7 +2945,7 @@ export default function TennisPairingApp() {
     persistWeekly({ setFormats: setFormats.map((f, i) => (i === index ? value : f)) });
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     // Regenerating over an existing schedule is a re-roll: the entire draft was rejected,
     // not one pairing within it. Counted separately for exactly that reason.
     recordAction(schedule ? 'reroll' : 'generate');
@@ -2892,8 +2956,12 @@ export default function TennisPairingApp() {
     // day: change the date to next week and last week's pairings are still sitting there,
     // presented as this week's.
     result.generatedFor = sessionDate;
-    persistWeekly({ schedule: result });
+    // Unsaved until the write says otherwise. The sheet is shown straight away because
+    // waiting would feel broken, but anything that hands the phone to another app has to
+    // wait for this.
+    scheduleSavedRef.current = false;
     setTab('results');
+    await persistWeekly({ schedule: result });
   }
 
   function matchIdentity(teamA, teamB) {
@@ -2961,6 +3029,19 @@ export default function TennisPairingApp() {
     const sheet = shownSchedule;
     if (!sheet) return;
     setShareStatus('working');
+
+    // Opening the share sheet hands the phone to another app, and a browser in the
+    // background can have an unfinished write killed without ever reporting an error.
+    // That is how a sheet gets posted to the club chat while nobody else can see it.
+    // So: finish saving first, and refuse to share one that did not save.
+    if (!watching) {
+      try { await weeklyWriteRef.current; } catch { /* the save path reports its own failure */ }
+      if (!scheduleSavedRef.current) {
+        setShareStatus('unsaved');
+        setTimeout(() => setShareStatus(''), 8000);
+        return;
+      }
+    }
 
     const subtitle = [
       shownSessionDate ? formatSessionDate(shownSessionDate) : '',
@@ -3403,14 +3484,26 @@ export default function TennisPairingApp() {
               </button>
             </div>
           )}
-          {saveError && (
-            <div className="px-4 sm:px-5 py-2.5 flex items-center gap-2 text-sm" style={{ background: 'var(--warn-tint)', color: 'var(--warn)' }}>
-              <span className="flex-1">⚠ {saveError}</span>
-              <button type="button" onClick={() => setSaveError('')} className="tp-focus font-semibold text-xs underline">
-                Dismiss
-              </button>
-            </div>
-          )}
+          {saveError && (() => {
+            // An unsaved sheet cannot be dismissed: the whole failure is that it looks
+            // fine when it isn't, and a warning you can wave away is no warning at all.
+            const unsaved = saveError.startsWith('These pairings are NOT saved');
+            return (
+              <div
+                className="px-4 sm:px-5 py-2.5 flex items-center gap-2 text-sm"
+                style={unsaved
+                  ? { background: 'var(--clay)', color: '#fff', fontWeight: 600 }
+                  : { background: 'var(--warn-tint)', color: 'var(--warn)' }}
+              >
+                <span className="flex-1">⚠ {saveError}</span>
+                {!unsaved && (
+                  <button type="button" onClick={() => setSaveError('')} className="tp-focus font-semibold text-xs underline">
+                    Dismiss
+                  </button>
+                )}
+              </div>
+            );
+          })()}
           <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b" style={{ borderColor: 'var(--line)' }}>
             <div>
               <div className="flex items-center gap-2">
@@ -5332,12 +5425,20 @@ export default function TennisPairingApp() {
                       rather than copy, switch app, long-press, paste. */}
                   <button type="button" onClick={handleShareSheet} disabled={shareStatus === 'working'} className="tp-btn-primary tp-focus w-full py-3 flex items-center justify-center gap-2 text-sm">
                     <Upload size={16} />
-                    {shareStatus === 'working' ? 'Preparing…'
+                    {shareStatus === 'working' ? (savingSheet ? 'Saving the sheet…' : 'Preparing…')
                       : shareStatus === 'shared' ? 'Shared!'
                       : shareStatus === 'saved' ? 'Saved to your photos'
+                      : shareStatus === 'unsaved' ? "Not shared — the sheet isn't saved"
                       : shareStatus === 'failed' ? "Couldn't make the image — use Copy below"
                       : 'Share the sheet'}
                   </button>
+                  {shareStatus === 'unsaved' && (
+                    <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--clay-tint)', color: 'var(--ink)', lineHeight: 1.5 }}>
+                      These pairings never reached the database, so sharing them would post a
+                      sheet nobody else can open. Check your connection and tap
+                      <strong> Re-roll pairings</strong> to save them, then share.
+                    </div>
+                  )}
                   {shareStatus === 'saved' && (
                     <div className="text-xs px-3 py-2 rounded-lg" style={{ background: 'var(--court-tint)', color: 'var(--court)' }}>
                       This browser has no share button, so the image was saved instead — attach it

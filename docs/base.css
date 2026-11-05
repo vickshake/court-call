@@ -1,0 +1,154 @@
+/* ============================================================
+   Court Call — document system
+   Display : TeX Gyre Heros Cn (condensed grotesque)
+   Body    : Lora (serif)
+   Code    : Liberation Mono
+   ============================================================ */
+
+@page { size: letter landscape; margin: 0; }
+@page portrait { size: letter portrait; margin: 0; }
+
+:root {
+  --court: #1E5631;
+  --court-deep: #12341E;
+  --court-tint: #E7F0E9;
+  --clay: #A8532E;
+  --clay-tint: #F4E7E0;
+  --warn: #9C6B0B;
+  --warn-tint: #F6EDD8;
+  --ink: #1C211D;
+  --muted: #6B7268;
+  --line: #DDE2DA;
+  --paper: #F6F7F4;
+  --surface: #FFFFFF;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  font-family: "Lora", serif;
+  color: var(--ink);
+  background: var(--paper);
+  font-size: 9pt;
+  line-height: 1.45;
+}
+
+.page {
+  position: relative;
+  width: 11in; height: 8.5in;
+  padding: 0.46in 0.55in 0.72in 0.55in;
+  background: var(--paper);
+  page-break-after: always;
+  overflow: hidden;
+}
+.page.portrait {
+  page: portrait;
+  width: 8.5in; height: 11in;
+  padding: 0.6in 0.7in 0.85in 0.7in;
+}
+.page:last-child { page-break-after: auto; }
+
+/* ---------- masthead ---------- */
+.mast {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  border-bottom: 2.4pt solid var(--court);
+  padding-bottom: 6pt; margin-bottom: 14pt;
+}
+.mast-left { display: flex; align-items: baseline; gap: 9pt; flex: 0 0 auto; }
+.wordmark {
+  white-space: nowrap;
+  font-family: "TeX Gyre Heros Cn", "Liberation Sans Narrow", sans-serif;
+  font-weight: 700; font-size: 19pt; letter-spacing: 0.055em;
+  text-transform: uppercase; color: var(--ink); line-height: 1;
+}
+.wordmark em { font-style: normal; color: var(--court); }
+.mast-title {
+  white-space: nowrap;
+  font-family: "TeX Gyre Heros Cn", sans-serif;
+  font-weight: 700; font-size: 11pt; letter-spacing: 0.02em;
+  color: var(--court); line-height: 1;
+}
+.strip { display: flex; gap: 2.5pt; align-items: center; flex: 0 0 auto; }
+.strip .cell {
+  flex: 0 0 auto; width: 13pt; height: 13pt;
+  border: 0.6pt solid var(--line); background: var(--surface);
+  font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700; font-size: 6.5pt;
+  color: #B6BDB2; display: flex; align-items: center; justify-content: center;
+}
+.strip .cell.on { background: var(--court); border-color: var(--court); color: #fff; }
+.strip .cell.dim { background: #EDEFEA; }
+
+/* ---------- structure ---------- */
+h1.headline {
+  font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+  font-size: 24pt; line-height: 0.98; margin: 0 0 5pt 0;
+}
+p.deck {
+  margin: 0 0 13pt 0; font-size: 9.5pt; line-height: 1.5;
+  color: #3B423C; max-width: 7.6in;
+}
+p.deck strong { color: var(--court); font-weight: 700; }
+
+h2.section {
+  font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+  font-size: 8pt; letter-spacing: 0.15em; text-transform: uppercase;
+  color: var(--court); margin: 0 0 7pt 0; padding-bottom: 3.5pt;
+  border-bottom: 0.7pt solid var(--line);
+}
+
+.cols { display: flex; gap: 20pt; }
+.col { flex: 1; }
+
+.card {
+  background: var(--surface); border: 0.7pt solid var(--line);
+  padding: 8pt 10pt; margin-bottom: 7pt;
+}
+.card.accent { border-left: 2.4pt solid var(--court); }
+.card.edge-clay { border-left: 2.4pt solid var(--clay); }
+.card.edge-warn { border-left: 2.4pt solid var(--warn); }
+.card h3 {
+  font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700;
+  font-size: 9.4pt; margin: 0 0 3.5pt 0;
+}
+.card p { margin: 0 0 4pt 0; }
+.card p:last-child { margin-bottom: 0; }
+
+.mono { font-family: "Liberation Mono", monospace; font-size: 7.7pt; letter-spacing: -0.01em; }
+.k { color: var(--court); font-weight: 700; }
+.muted { color: var(--muted); }
+
+ul.tight { margin: 0; padding-left: 12pt; }
+ul.tight li { margin-bottom: 3pt; }
+ul.tight li::marker { color: var(--court); }
+
+table.grid { width: 100%; border-collapse: collapse; font-size: 8.2pt; }
+table.grid th {
+  font-family: "TeX Gyre Heros Cn", sans-serif; font-weight: 700; font-size: 6.7pt;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted);
+  text-align: left; padding: 0 7pt 4pt 0; border-bottom: 0.7pt solid var(--court);
+}
+table.grid td {
+  padding: 5pt 7pt 5pt 0; border-bottom: 0.5pt solid var(--line); vertical-align: top;
+}
+table.grid tr:last-child td { border-bottom: none; }
+table.grid td.lead { font-weight: 700; color: var(--court); }
+table.compact { font-size: 7.6pt; }
+table.compact td { padding: 3.5pt 6pt 3.5pt 0; line-height: 1.35; }
+table.compact td.num { font-family: "Liberation Mono", monospace; white-space: nowrap; }
+
+.note {
+  background: var(--court-tint); border-left: 2.4pt solid var(--court);
+  padding: 7pt 10pt; font-size: 8.3pt; line-height: 1.45;
+}
+.note.clay { background: var(--clay-tint); border-left-color: var(--clay); }
+.note.warn { background: var(--warn-tint); border-left-color: var(--warn); }
+
+.foot {
+  position: absolute; left: 0.55in; right: 0.55in; bottom: 0.32in;
+  display: flex; justify-content: space-between; align-items: center;
+  border-top: 0.7pt solid var(--line); padding-top: 4pt;
+  font-family: "TeX Gyre Heros Cn", sans-serif; font-size: 6.6pt;
+  letter-spacing: 0.11em; text-transform: uppercase; color: var(--muted);
+}
+.page.portrait .foot { left: 0.7in; right: 0.7in; bottom: 0.45in; }
