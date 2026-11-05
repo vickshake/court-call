@@ -1875,6 +1875,15 @@ export default function TennisPairingApp() {
   // Whether the schedule on screen has actually reached the database. A generated sheet
   // starts unsaved and only becomes saved when a write completes.
   const scheduleSavedRef = useRef(true);
+  // Two copies of the app in one browser - two tabs, or the home-screen app beside a
+  // browser tab - share a device id and so write the same document, each from its own
+  // memory. Every save carries a fresh writeId; this holds the last one this copy wrote or
+  // loaded. If the stored one differs, another copy has saved since, and writing over it
+  // would put back whatever that save replaced.
+  const knownWriteIdRef = useRef(null);
+  // Names this copy of the app in the audit fields of every save it makes.
+  const tabIdRef = useRef(null);
+  if (tabIdRef.current === null) tabIdRef.current = uid();
   const [savingSheet, setSavingSheet] = useState(false);
   const [hintsDismissed, setHintsDismissed] = useState(() => readHintsDismissed());
   const [exportPrompt, setExportPrompt] = useState(false);
@@ -2074,6 +2083,37 @@ export default function TennisPairingApp() {
     };
   }, [loaded, accrueEngagement, flushTelemetry]);
 
+  // Puts a stored weekly sheet into memory and on screen. Used on load, and whenever
+  // another copy of the app in this browser turns out to have saved a newer version.
+  const applyWeeklyState = useCallback((w) => {
+    const loadedDate = w.sessionDate || todayISO();
+    const date = loadedDate < todayISO() ? todayISO() : loadedDate;
+    // Weeks saved before formats moved onto sets carry only a count. Rebuild the
+    // club's usual shape from it - mixed, split, mixed - rather than losing the week.
+    const formats = (Array.isArray(w.setFormats) && w.setFormats.length)
+      ? w.setFormats
+      : (w.rounds ? defaultSetFormats(w.rounds) : null);
+    setPlayingIds(w.playingIds || []);
+    setSessionDate(date);
+    setSessionTime(w.sessionTime || '');
+    setSessionDuration(w.sessionDuration || '');
+    if (w.rounds) setRounds(w.rounds);
+    if (formats) setSetFormats(formats);
+    setSchedule(w.schedule || null);
+    weeklyRef.current = {
+      playingIds: w.playingIds || [],
+      sessionDate: date,
+      sessionTime: w.sessionTime || '',
+      sessionDuration: w.sessionDuration || '',
+      // A sheet with neither gets the app's starting shape: three sets.
+      rounds: w.rounds || 3,
+      setFormats: formats || defaultSetFormats(3),
+      schedule: w.schedule || null,
+      updatedAt: w.updatedAt || null,
+    };
+    knownWriteIdRef.current = w.writeId || null;
+  }, []);
+
   const loadAll = useCallback(async () => {
     const [dirResult, weeklyResult, historyResult, pinResult, registryResult, auditResult] = await Promise.allSettled([
       window.storage.get(DIRECTORY_KEY, true),
@@ -2120,32 +2160,7 @@ export default function TennisPairingApp() {
       }
     }
 
-    if (weeklyState) {
-      const w = weeklyState;
-      setPlayingIds(w.playingIds || []);
-      const loadedDate = w.sessionDate || todayISO();
-      setSessionDate(loadedDate < todayISO() ? todayISO() : loadedDate);
-      setSessionTime(w.sessionTime || '');
-      setSessionDuration(w.sessionDuration || '');
-      if (w.rounds) setRounds(w.rounds);
-      // Weeks saved before formats moved onto sets carry only a count. Rebuild the
-      // club's usual shape from it - mixed, split, mixed - rather than losing the week.
-      if (Array.isArray(w.setFormats) && w.setFormats.length) setSetFormats(w.setFormats);
-      else if (w.rounds) setSetFormats(defaultSetFormats(w.rounds));
-      setSchedule(w.schedule || null);
-      weeklyRef.current = {
-        playingIds: w.playingIds || [],
-        sessionDate: loadedDate < todayISO() ? todayISO() : loadedDate,
-        sessionTime: w.sessionTime || '',
-        sessionDuration: w.sessionDuration || '',
-        rounds: w.rounds || rounds,
-        setFormats: (Array.isArray(w.setFormats) && w.setFormats.length)
-          ? w.setFormats
-          : (w.rounds ? defaultSetFormats(w.rounds) : setFormats),
-        schedule: w.schedule || null,
-        updatedAt: w.updatedAt || null,
-      };
-    }
+    if (weeklyState) applyWeeklyState(weeklyState);
     // No explicit else here, deliberately: on an ambiguous failure this leaves the
     // in-memory state exactly as it already was, rather than resetting anything.
 
@@ -2206,9 +2221,35 @@ export default function TennisPairingApp() {
     } else {
       setAuditLog([]);
     }
-  }, []);
+  }, [applyWeeklyState]);
 
   useEffect(() => { loadAll().then(() => setLoaded(true)); }, [loadAll]);
+
+  // Coming back to this copy of the app - another tab or window may have saved a newer
+  // sheet meanwhile. Show that one now, rather than discovering it at the next save.
+  useEffect(() => {
+    if (!loaded) return undefined;
+    const onShow = async () => {
+      if (document.hidden) return;
+      const pending = weeklyWriteRef.current;
+      try { await pending; } catch { /* the save path reports its own failure */ }
+      try {
+        const cur = await window.storage.get(WEEKLY_KEY, true);
+        // A save queued while reading checks for itself; don't race it.
+        if (weeklyWriteRef.current !== pending) return;
+        const stored = cur && cur.value ? JSON.parse(cur.value) : null;
+        if (stored && (stored.writeId || null) !== knownWriteIdRef.current) {
+          applyWeeklyState(stored);
+          scheduleSavedRef.current = true;
+          setSaveError('This sheet was changed in another tab or window, so it now shows that version.');
+        }
+      } catch {
+        // Unreachable or gone - keep what is on screen. The next save checks again.
+      }
+    };
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  }, [loaded, applyWeeklyState]);
 
   // Resolves a moment after load. Only ever used to word an error message more usefully,
   // so arriving late costs nothing - the generic wording covers the gap.
@@ -2355,13 +2396,47 @@ export default function TennisPairingApp() {
     weeklyWriteRef.current = weeklyWriteRef.current.then(async () => {
       const wantsSchedule = partial.schedule !== undefined && partial.schedule !== null;
       if (wantsSchedule) setSavingSheet(true);
+      const writeId = uid();
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          await window.storage.set(WEEKLY_KEY, JSON.stringify(weeklyRef.current), true);
+          // Look before writing. Another copy of the app in this browser writes this same
+          // document from its own memory; saving over a newer version puts back whatever
+          // that version replaced. That is how 5 Nov's document came to hold the right
+          // players beside the previous session's schedule. So if another copy has saved
+          // since, take its version and drop this change rather than overwrite it.
+          // Firestore cannot lock across copies, so this narrows the gap to the time
+          // between this read and the write below - it does not close it.
+          let stored = null;
+          try {
+            const cur = await window.storage.get(WEEKLY_KEY, true);
+            stored = cur && cur.value ? JSON.parse(cur.value) : null;
+          } catch (e) {
+            if (!isConfirmedNotFound(e)) throw e;
+          }
+          const storedId = stored ? (stored.writeId || null) : null;
+          // storedId === writeId: an earlier attempt of this same save landed.
+          if (stored && storedId !== knownWriteIdRef.current && storedId !== writeId) {
+            applyWeeklyState(stored);
+            scheduleSavedRef.current = true;
+            if (wantsSchedule) setSavingSheet(false);
+            setSaveError('This sheet was changed in another tab or window, so it now shows that version. Redo your last change if it is still needed.');
+            return;
+          }
+          // The audit fields make the next occurrence readable from the document alone:
+          // rev counts every save, writer names the copy of the app that made it.
+          const payload = {
+            ...weeklyRef.current,
+            rev: ((stored && stored.rev) || 0) + 1,
+            writeId,
+            writer: tabIdRef.current,
+            updatedAt: Date.now(),
+          };
+          await window.storage.set(WEEKLY_KEY, JSON.stringify(payload), true);
+          knownWriteIdRef.current = writeId;
           if (wantsSchedule) {
             const back = await window.storage.get(WEEKLY_KEY, true);
             const saved = back && back.value ? JSON.parse(back.value) : null;
-            if (!saved || !saved.schedule) throw new Error('schedule did not stick');
+            if (!saved || !saved.schedule || saved.writeId !== writeId) throw new Error('schedule did not stick');
           }
           setSaveError(capNotice);
           if (wantsSchedule) { scheduleSavedRef.current = true; setSavingSheet(false); }
@@ -2595,6 +2670,9 @@ export default function TennisPairingApp() {
   async function handleRefresh() {
     setSyncing(true);
     if (viewingKey) await loadViewingSheet(viewingKey);
+    // Let any save finish first: a read started before it lands would put the older
+    // sheet back into memory, and the next save would write it out again.
+    try { await weeklyWriteRef.current; } catch { /* the save path reports its own failure */ }
     await loadAll();
     await loadOtherSessions();
     setTodaySearch('');

@@ -230,5 +230,89 @@ console.log('\n=== Sharing waits for the save ===\n');
   check('pointing at how to fix it',/Re-roll pairings/.test(t),t.slice(0,500));
 }
 
+console.log('\n=== Two copies of the app in one browser ===\n');
+
+// The 5 Nov document: today's 16 players beside the previous session's schedule.
+// Two tabs (or a home-screen app and a browser tab) share localStorage, so they share a
+// device id and write the same document - each from its own memory. A copy opened before
+// the new sheet still holds the old schedule, and its next tap writes it back.
+{
+  installDom();
+  const store=makeStore({'player-directory':JSON.stringify(roster)});
+  global.window.storage=store;
+  const React=(await import('react')).default;const{act}=await import('react');const{createRoot}=await import('react-dom/client');
+  const m=await import(`${APP_URL}?t=${Math.random()}`);   // one module: one device id, as in one browser
+  const playerBtn=(c,i)=>[...c.querySelectorAll('button')].find(x=>new RegExp(`Player ${i}(?!\\d)`).test(x.textContent||''));
+  const cA=global.document.getElementById('root');
+  const cB=global.document.createElement('div'); global.document.body.appendChild(cB);
+
+  // Tab A: last session's sheet, 8 players
+  await act(async()=>{createRoot(cA).render(React.createElement(m.default));}); await act(async()=>{await sleep(90);});
+  for(let i=0;i<8;i++) await click(act,playerBtn(cA,i));
+  await click(act,findButton(cA,'Courts'));
+  await click(act,findButton(cA,'Generate Pairings'));
+  await act(async()=>{await sleep(200);});
+  // Still in tab A, this session's people reply and are marked in
+  await click(act,findButton(cA,'Today'));
+  for(let i=8;i<16;i++) await click(act,playerBtn(cA,i));
+  await act(async()=>{await sleep(100);});
+
+  // Tab B opens, generates for all 16, and the save is confirmed
+  await act(async()=>{createRoot(cB).render(React.createElement(m.default));}); await act(async()=>{await sleep(120);});
+  await click(act,findButton(cB,'Courts'));
+  await click(act,findButton(cB,'Generate Pairings'));
+  await act(async()=>{await sleep(200);});
+  const id=global.localStorage.getItem('court-call-device-id');
+  const KEY=`${WK}:${id}`;
+  const inSheet=(st)=>{const s=new Set();(st.schedule?st.schedule.rounds:[]).forEach(r=>{r.matches.forEach(x=>[...x.teamA,...x.teamB].forEach(p=>s.add(p)));(r.sittingOut||[]).forEach(p=>s.add(p));});return s;};
+  const afterB=JSON.parse(store._docs.get(KEY));
+  check('tab B saved the 16-player sheet',inSheet(afterB).size===16,String(inSheet(afterB).size));
+
+  // Back in tab A, still showing the old sheet, one more tap: a late arrival
+  await click(act,findButton(cA,'Today'));
+  await click(act,playerBtn(cA,16));
+  await act(async()=>{await sleep(150);});
+  const fin=JSON.parse(store._docs.get(KEY));
+  // Tab A's tap was made against a sheet it hadn't seen, so it is dropped, not merged
+  check("the stored ids are tab B's 16",fin.playingIds.length===16&&!fin.playingIds.includes('p16'),JSON.stringify(fin.playingIds));
+  check("tab A's tap does not put the old 8-player schedule back",inSheet(fin).size===16,
+    `stored schedule has ${inSheet(fin).size} players: ${JSON.stringify([...inSheet(fin)])}`);
+  check('tab A says the sheet changed elsewhere',/changed in another tab or window/.test(text(cA)),text(cA).slice(0,300));
+  check('every save carries its audit fields',fin.rev>=1&&!!fin.writeId&&!!fin.writer,JSON.stringify({rev:fin.rev,writeId:fin.writeId,writer:fin.writer}));
+}
+
+// Coming back to a copy picks up what another copy saved, before any tap
+{
+  installDom();
+  const store=makeStore({'player-directory':JSON.stringify(roster)});
+  global.window.storage=store;
+  const React=(await import('react')).default;const{act}=await import('react');const{createRoot}=await import('react-dom/client');
+  const m=await import(`${APP_URL}?t=${Math.random()}`);
+  const playerBtn=(c,i)=>[...c.querySelectorAll('button')].find(x=>new RegExp(`Player ${i}(?!\\d)`).test(x.textContent||''));
+  const cA=global.document.getElementById('root');
+  const cB=global.document.createElement('div'); global.document.body.appendChild(cB);
+  await act(async()=>{createRoot(cA).render(React.createElement(m.default));}); await act(async()=>{await sleep(90);});
+  await act(async()=>{createRoot(cB).render(React.createElement(m.default));}); await act(async()=>{await sleep(90);});
+  for(let i=0;i<8;i++) await click(act,playerBtn(cB,i));
+  await act(async()=>{await sleep(100);});
+  check('before returning, tab A has not seen tab B',!/Playing today \(8\)/.test(text(cA)),text(cA).slice(0,200));
+  await act(async()=>{global.document.dispatchEvent(new global.window.Event('visibilitychange'));});
+  await act(async()=>{await sleep(100);});
+  check('on return, tab A shows the 8 marked in tab B',/Playing today \(8\)/.test(text(cA)),text(cA).slice(0,200));
+}
+
+// One copy alone never trips the check on its own saves
+{
+  const store=makeStore({'player-directory':JSON.stringify(roster)});
+  const {c,act}=await boot(store);
+  for(let i=0;i<6;i++) await tapFast(act,[...c.querySelectorAll('button')].find(x=>new RegExp(`Player ${i}(?!\\d)`).test(x.textContent||'')));
+  await act(async()=>{await sleep(300);});
+  const id=global.localStorage.getItem('court-call-device-id');
+  const st=JSON.parse(store._docs.get(`${WK}:${id}`));
+  check('a single copy saves every tap',st.playingIds.length===6,String(st.playingIds.length));
+  check('with no false alarm',!/another tab or window/.test(text(c)),text(c).slice(0,200));
+  check('and rev counts each save',st.rev===6,String(st.rev));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail===0?0:1);

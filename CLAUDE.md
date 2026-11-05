@@ -67,13 +67,22 @@ thing to know about this system's failure modes.
 | `match-history` | Every logged result, keyed by date, set, court and players | Shared |
 | `admin-registry` | Superuser and Admin PINs, each SHA-256 with its own salt | Shared |
 | `audit-log` | Admin and Superuser actions, newest first, capped at 500 | Shared |
-| `weekly-state-v2:<id>` | One week's sheet: who's playing, session window, set formats, schedule | Per browser |
+| `weekly-state-v2:<id>` | One week's sheet: who's playing, session window, set formats, schedule, plus audit fields `rev`, `writeId`, `writer` | Per browser |
 | `usage-telemetry:<id>` | Visits, engagement, tab and action counts, device class | Per browser |
 
 `<id>` is a random id each browser mints into `localStorage`. Weekly sheets are per
 browser because a single shared one meant two organizers silently erased each other's
-work — every save rewrote the whole document from that device's memory. Per browser makes
-collisions impossible rather than unlikely, with no locking to get wrong.
+work — every save rewrote the whole document from that device's memory. Per browser rules
+out collisions between organizers.
+
+It does not rule them out within one browser. Two copies of the app there — two tabs, or
+the home-screen app beside a browser tab — share the id and so the document. Every save
+therefore reads first: if the stored `writeId` is not the last one this copy wrote or
+loaded, another copy has saved since, and this copy takes that version and drops its own
+change instead of overwriting it. A copy coming back to the foreground reloads the same
+way. This is not a lock — Firestore cannot lock across copies — so a gap remains between
+the read and the write. `rev` counts saves and `writer` names the copy that made each
+one, so any collision is readable from the document alone.
 
 Birth year and injury notes are still stored and exported but are **not shown or editable
 anywhere in the app**, and nothing reads them.
@@ -205,7 +214,7 @@ error tagging. Tests click real buttons and assert on what reaches storage rathe
 calling internals.
 
 10 suites: `drift`, `layout`, `legacy`, `logging`, `persist`, `session`, `share`, `smoke`,
-`stamp`, `watch`. 160 assertions.
+`stamp`, `watch`. 170 assertions.
 
 Lint with `npx oxlint src/TennisPairingApp.jsx`. Baseline is 9 warnings — treat any
 increase as a regression.
@@ -232,6 +241,8 @@ silently using stale data, and a late arrival making a whole sheet vanish.
 - **Badges stay rare and positive.** The streak flame needs 3+ wins. Everything derived
   from logged results is distorted by incomplete logging — an unlogged loss does not break
   a streak — so the flame can overstate, not just lag.
+- **Every weekly save reads before it writes.** Without the `writeId` check, a second copy
+  of the app in the same browser writes its stale schedule over a newer one.
 - **Delete dead code rather than leaving it.** Code that cannot work misleads the next
   reader.
 
@@ -256,6 +267,13 @@ silently using stale data, and a late arrival making a whole sheet vanish.
 
 ## Open, not started
 
+- **Open bug: a generated schedule can fail to reach Firestore** while fresh `playingIds`
+  do, leaving last session's sheet in the document. Seen live on v0.82.0. Reproduced as a
+  second copy of the app in the same browser writing its stale schedule back. Fixed in
+  v0.83.0 (the `writeId` check above); not yet confirmed with the organizer that this was
+  his case. Full briefing, evidence and what has been ruled out:
+  `docs/open-bug-schedule-persistence.md`
+
 - Per-player directory documents, removing the last write conflict
 - Repeat-partner avoidance across weeks, now that match history is real
 - A limitation flag for players returning from injury, with a review cycle
@@ -277,4 +295,4 @@ silently using stale data, and a late arrival making a whole sheet vanish.
 
 ---
 
-*Court Call v0.82.0 · 5 November 2026*
+*Court Call v0.83.0 · 5 November 2026*
