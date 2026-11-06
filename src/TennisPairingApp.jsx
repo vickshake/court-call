@@ -608,6 +608,10 @@ function layoutShareSheet(schedule, meta) {
     blocks.push({ kind: 'subtitle', text: meta.subtitle, y });
     y += 42;
   }
+  if (meta && meta.forecast) {
+    blocks.push({ kind: 'forecast', text: meta.forecast, y });
+    y += 36;
+  }
   y += 6;
   blocks.push({ kind: 'rule', y });
   y += 30;
@@ -693,6 +697,10 @@ function drawShareSheet(schedule, meta) {
       ctx.fillStyle = MUTED;
       ctx.font = sans(28, 400);
       ctx.fillText(b.text, SHEET_PAD, b.y + 26);
+    } else if (b.kind === 'forecast') {
+      ctx.fillStyle = MUTED;
+      ctx.font = sans(fitText(b.text, width - SHEET_PAD * 2, 24, 400), 400);
+      ctx.fillText(b.text, SHEET_PAD, b.y + 24);
     } else if (b.kind === 'rule') {
       ctx.fillStyle = COURT;
       ctx.fillRect(SHEET_PAD, b.y, width - SHEET_PAD * 2, 3);
@@ -1492,6 +1500,109 @@ function formatSessionDate(iso) {
 const WEATHER_LAT = 37.4636;
 const WEATHER_LON = -122.4286;
 
+// One forecast request per date, shared by the homepage figure and the share image, and
+// reused briefly - the model behind it only updates every 1-3 hours. Kept a little under
+// the homepage's 30-minute refresh so that refresh always fetches anew.
+const FORECAST_TTL_MS = 25 * 60 * 1000;
+const forecastCache = new Map();
+function fetchForecastDay(date) {
+  const hit = forecastCache.get(date);
+  if (hit && Date.now() - hit.at < FORECAST_TTL_MS) return hit.promise;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
+    + '&daily=temperature_2m_max,temperature_2m_min,uv_index_max,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max'
+    + '&hourly=uv_index,temperature_2m,precipitation_probability,wind_speed_10m,wind_gusts_10m'
+    + '&temperature_unit=fahrenheit&wind_speed_unit=mph'
+    + `&timezone=America%2FLos_Angeles&start_date=${date}&end_date=${date}`;
+  // A date past the forecast window comes back as an error body, not a failed request;
+  // the callers read that as "no forecast", which is what it is.
+  const promise = fetch(url).then((res) => res.json());
+  promise.catch(() => {
+    // A failure is not worth remembering - the next ask should try again.
+    if (forecastCache.get(date) && forecastCache.get(date).promise === promise) forecastCache.delete(date);
+  });
+  forecastCache.set(date, { at: Date.now(), promise });
+  return promise;
+}
+
+// "6", "6:30" and AM/PM, for a time range written the way people say it: "6–8 PM".
+function hourLabel(mins) {
+  const h = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return { text: m ? `${h12}:${String(m).padStart(2, '0')}` : String(h12), period: h >= 12 ? 'PM' : 'AM' };
+}
+function formatHourRange(startMin, endMin) {
+  const a = hourLabel(startMin);
+  if (endMin == null) return `${a.text} ${a.period}`;
+  const b = hourLabel(endMin);
+  return a.period === b.period ? `${a.text}–${b.text} ${b.period}` : `${a.text} ${a.period}–${b.text} ${b.period}`;
+}
+
+// The weather line on the share image. Where a start time is set it describes the hours
+// actually being played - a 6 PM session in November is under lights, so the day's high
+// and the midday UV would both mislead. Only with no time to go on does it fall back to
+// the day, and says so. Null when there is nothing to say; the image goes without.
+function shareForecastLine(data, sessionTime, sessionDuration) {
+  if (!data) return null;
+  const hourly = data.hourly || {};
+  const daily = data.daily || {};
+  const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const most = (xs) => (xs.length ? Math.max(...xs) : null);
+  let label;
+  let temp;
+  let rain;
+  let wind;
+  let gust;
+  let uv;
+
+  if (sessionTime && Array.isArray(hourly.time)) {
+    const [sh, sm] = sessionTime.split(':').map(Number);
+    const startMin = sh * 60 + sm;
+    const dur = Number(sessionDuration) || 0;
+    // With no length set, just the hour play starts in.
+    const endMin = startMin + (dur || 1);
+    const idx = [];
+    hourly.time.forEach((stamp, i) => {
+      // "YYYY-MM-DDTHH:MM", already in the requested timezone. Same window rule as UV on
+      // the homepage: the hour play starts in, up to the hour it ends on.
+      const mins = Number(String(stamp).slice(11, 13)) * 60 + Number(String(stamp).slice(14, 16));
+      if (mins >= startMin - 59 && mins < endMin) idx.push(i);
+    });
+    const pick = (arr) => (Array.isArray(arr) ? idx.map((i) => arr[i]).filter((v) => v != null) : []);
+    const temps = pick(hourly.temperature_2m);
+    if (!temps.length) return null;
+    label = `Forecast ${formatHourRange(startMin, dur ? startMin + dur : null)}:`;
+    temp = `${Math.round(mean(temps))}°`;
+    rain = most(pick(hourly.precipitation_probability));
+    wind = most(pick(hourly.wind_speed_10m));
+    gust = most(pick(hourly.wind_gusts_10m));
+    uv = mean(pick(hourly.uv_index));
+  } else {
+    const first = (arr) => (Array.isArray(arr) && arr[0] != null ? arr[0] : null);
+    const hi = first(daily.temperature_2m_max);
+    const lo = first(daily.temperature_2m_min);
+    if (hi == null || lo == null) return null;
+    label = 'Forecast for the day:';
+    temp = `High ${Math.round(hi)}° / low ${Math.round(lo)}°`;
+    rain = first(daily.precipitation_probability_max);
+    wind = first(daily.wind_speed_10m_max);
+    gust = first(daily.wind_gusts_10m_max);
+    uv = first(daily.uv_index_max);
+  }
+
+  const parts = [temp];
+  if (rain != null) parts.push(`${Math.round(rain)}% rain`);
+  if (wind != null) {
+    // Gusts only when they are a different story from the wind itself.
+    const gusty = gust != null && Math.round(gust) >= Math.round(wind) + 8;
+    parts.push(`Wind ${Math.round(wind)} mph${gusty ? `, gusts ${Math.round(gust)}` : ''}`);
+  }
+  // Rounded before comparing, so the number shown is the number judged. Below 3 is
+  // "Low" - not worth a word, and after dark it is simply zero.
+  if (uv != null && Math.round(uv) >= 3) parts.push(`UV ${Math.round(uv)}`);
+  return `${label} ${parts.join(' · ')}`;
+}
+
 // Categorises the ROUNDED value, because that is the number on screen. Categorising the
 // raw figure produced "UV 8 (High)" from a 7.9 - the label contradicting the number
 // beside it.
@@ -1786,6 +1897,7 @@ export default function TennisPairingApp() {
   const [sessionDuration, setSessionDuration] = useState('');
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState('idle'); // idle | loading | ready | unavailable | error
+  const [shareForecast, setShareForecast] = useState(null); // the share image's weather line, or null
   const [rounds, setRounds] = useState(3);
   // One entry per set. Length is the number of sets, so the +/- control and the
   // formats are the same piece of state - they can't disagree.
@@ -2279,12 +2391,7 @@ export default function TennisPairingApp() {
 
     function fetchForecast() {
       setWeatherStatus((prev) => (prev === 'ready' ? prev : 'loading')); // no "loading" flash on background refreshes
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
-        + `&daily=temperature_2m_max,temperature_2m_min,uv_index_max`
-        + `&hourly=uv_index&temperature_unit=fahrenheit`
-        + `&timezone=America%2FLos_Angeles&start_date=${sessionDate}&end_date=${sessionDate}`;
-      fetch(url)
-        .then((res) => res.json())
+      fetchForecastDay(sessionDate)
         .then((data) => {
           if (cancelled) return;
           const daily = (data && data.daily) || {};
@@ -2333,6 +2440,32 @@ export default function TennisPairingApp() {
     const intervalId = isToday ? setInterval(fetchForecast, 30 * 60 * 1000) : null;
     return () => { cancelled = true; if (intervalId) clearInterval(intervalId); };
   }, [loaded, sessionDate, sessionTime, sessionDuration]);
+
+  // The weather line for the share image, for the sheet on screen - which while watching
+  // is someone else's, so their date and start time, not this browser's. Fetched ahead
+  // of time because a phone only allows the share sheet straight after the tap; a network
+  // wait in between can lose it.
+  const forecastFor = (viewingKey && viewingSheet && viewingSheet.state && viewingSheet.state.schedule)
+    ? {
+      date: viewingSheet.state.sessionDate || sessionDate,
+      time: viewingSheet.state.sessionTime || '',
+      duration: viewingSheet.state.sessionDuration || '',
+    }
+    : { date: sessionDate, time: sessionTime, duration: sessionDuration };
+  useEffect(() => {
+    if (!loaded || !forecastFor.date) { setShareForecast(null); return undefined; }
+    let cancelled = false;
+    // Cleared first, so a line for the previous date can never go out on this one.
+    setShareForecast(null);
+    const refresh = () => {
+      fetchForecastDay(forecastFor.date)
+        .then((data) => { if (!cancelled) setShareForecast(shareForecastLine(data, forecastFor.time, forecastFor.duration)); })
+        .catch(() => { if (!cancelled) setShareForecast(null); });
+    };
+    refresh();
+    const intervalId = forecastFor.date === todayISO() ? setInterval(refresh, 30 * 60 * 1000) : null;
+    return () => { cancelled = true; if (intervalId) clearInterval(intervalId); };
+  }, [loaded, forecastFor.date, forecastFor.time, forecastFor.duration]);
 
   async function persistDirectory(next) {
     setDirectory(next);
@@ -3129,7 +3262,7 @@ export default function TennisPairingApp() {
     let file = null;
     let dataUrl = null;
     try {
-      const canvas = drawShareSheet(sheet, { subtitle });
+      const canvas = drawShareSheet(sheet, { subtitle, forecast: shareForecast });
       if (!canvas) throw new Error('no canvas');
       dataUrl = canvas.toDataURL('image/png');
       file = dataUrlToFile(dataUrl, 'court-call.png');

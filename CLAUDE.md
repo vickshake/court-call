@@ -214,7 +214,7 @@ error tagging. Tests click real buttons and assert on what reaches storage rathe
 calling internals.
 
 10 suites: `drift`, `layout`, `legacy`, `logging`, `persist`, `session`, `share`, `smoke`,
-`stamp`, `watch`. 170 assertions.
+`stamp`, `watch`. 185 assertions.
 
 Lint with `npx oxlint src/TennisPairingApp.jsx`. Baseline is 9 warnings — treat any
 increase as a regression.
@@ -264,6 +264,10 @@ silently using stale data, and a late arrival making a whole sheet vanish.
 - **Sharing depends on the browser.** `navigator.share` with files is the primary path;
   the fallback saves the PNG. Brave is the one to watch — it has broken this app before by
   blocking the App Check script.
+- **The share image's forecast is a snapshot.** The line under the date (temperature,
+  rain chance and wind for the hours being played, from Open-Meteo) is fixed when the
+  image is made, and the image lives on in the chat after the forecast changes. It is
+  labelled "Forecast" for that reason, and left off entirely when none is available.
 
 ## Open, not started
 
@@ -295,4 +299,4 @@ silently using stale data, and a late arrival making a whole sheet vanish.
 
 ---
 
-*Court Call v0.83.0 · 5 November 2026*
+*Court Call v0.84.0 · 6 November 2026*
